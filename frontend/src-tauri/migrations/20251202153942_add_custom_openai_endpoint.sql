@@ -1,0 +1,6 @@
+-- No-op migration.
+-- This version existed in previously released builds and was already applied
+-- in some user databases. It was removed/renamed later, which causes SQLx to
+-- error on startup when it can't find the migration file.
+--
+-- Keeping this file as a no-op preserves compatibility with existing DBs.

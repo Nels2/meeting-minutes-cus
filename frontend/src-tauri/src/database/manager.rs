@@ -1,4 +1,4 @@
-use sqlx::{migrate::MigrateDatabase, Result, Sqlite, SqlitePool, Transaction};
+use sqlx::{migrate::MigrateDatabase, Result, Row, Sqlite, SqlitePool, Transaction};
 use std::fs;
 use std::path::Path;
 use tauri::Manager;
@@ -32,7 +32,9 @@ impl DatabaseManager {
 
         let pool = SqlitePool::connect(tauri_db_path).await?;
 
-        sqlx::migrate!("./migrations").run(&pool).await?;
+        let migrator = sqlx::migrate!("./migrations");
+        reconcile_migration_checksums(&pool, &migrator).await?;
+        migrator.run(&pool).await?;
 
         Ok(DatabaseManager { pool })
     }
@@ -205,4 +207,53 @@ impl DatabaseManager {
 
         Ok(())
     }
+}
+
+async fn reconcile_migration_checksums(
+    pool: &SqlitePool,
+    migrator: &sqlx::migrate::Migrator,
+) -> Result<()> {
+    const COMPAT_VERSIONS: &[i64] = &[
+        20250916100000,
+        20251202153942,
+        20251217153942,
+    ];
+
+    let has_table: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='_sqlx_migrations' LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?;
+
+    if has_table.is_none() {
+        return Ok(());
+    }
+
+    let rows = sqlx::query("SELECT version, checksum FROM _sqlx_migrations")
+        .fetch_all(pool)
+        .await?;
+
+    for row in rows {
+        let version: i64 = row.try_get("version")?;
+        if !COMPAT_VERSIONS.contains(&version) {
+            continue;
+        }
+
+        let db_checksum: Vec<u8> = row.try_get("checksum")?;
+        if let Some(migration) = migrator.iter().find(|m| m.version == version) {
+            if db_checksum != migration.checksum.as_ref() {
+                log::warn!(
+                    "Reconciling migration checksum for version {} to match current file",
+                    version
+                );
+                sqlx::query("UPDATE _sqlx_migrations SET checksum = ? WHERE version = ?")
+                    .bind(migration.checksum.as_ref())
+                    .bind(version)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+    }
+
+    Ok(())
 }

@@ -24,7 +24,7 @@ pub struct SaveTranscriptConfigRequest {
 
 pub struct SettingsRepository;
 
-// Transcript providers: localWhisper, deepgram, elevenLabs, groq, openai
+// Transcript providers: localWhisper, parakeet, deepgram, elevenLabs, groq, openai, custom-openai
 // Summary providers: openai, claude, ollama, groq, added openrouter
 // NOTE: Handle data exclusion in the higher layer as this is database abstraction layer(using SELECT *)
 
@@ -180,6 +180,7 @@ impl SettingsRepository {
         let api_key_column = match provider {
             "localWhisper" => "whisperApiKey",
             "parakeet" => return Ok(()), // Parakeet doesn't need an API key, return early
+            "custom-openai" => return Ok(()), // Custom OpenAI stores API key in customOpenAIConfig
             "deepgram" => "deepgramApiKey",
             "elevenLabs" => "elevenLabsApiKey",
             "groq" => "groqApiKey",
@@ -212,6 +213,10 @@ impl SettingsRepository {
         let api_key_column = match provider {
             "localWhisper" => "whisperApiKey",
             "parakeet" => return Ok(None), // Parakeet doesn't need an API key
+            "custom-openai" => {
+                let config = Self::get_custom_openai_config(pool).await?;
+                return Ok(config.and_then(|cfg| cfg.api_key));
+            }
             "deepgram" => "deepgramApiKey",
             "elevenLabs" => "elevenLabsApiKey",
             "groq" => "groqApiKey",

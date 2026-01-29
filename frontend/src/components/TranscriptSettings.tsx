@@ -5,12 +5,13 @@ import { Input } from './ui/input';
 import { Button } from './ui/button';
 import { Label } from './ui/label';
 import { Eye, EyeOff, Lock, Unlock } from 'lucide-react';
+import { toast } from 'sonner';
 import { ModelManager } from './WhisperModelManager';
 import { ParakeetModelManager } from './ParakeetModelManager';
 
 
 export interface TranscriptModelProps {
-    provider: 'localWhisper' | 'parakeet' | 'deepgram' | 'elevenLabs' | 'groq' | 'openai';
+    provider: 'localWhisper' | 'parakeet' | 'deepgram' | 'elevenLabs' | 'groq' | 'openai' | 'custom-openai';
     model: string;
     apiKey?: string | null;
 }
@@ -27,6 +28,9 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
     const [isApiKeyLocked, setIsApiKeyLocked] = useState<boolean>(true);
     const [isLockButtonVibrating, setIsLockButtonVibrating] = useState<boolean>(false);
     const [uiProvider, setUiProvider] = useState<TranscriptModelProps['provider']>(transcriptModelConfig.provider);
+    const [selectedWhisperModel, setSelectedWhisperModel] = useState<string>(transcriptModelConfig.provider === 'localWhisper' ? transcriptModelConfig.model : 'small');
+    const [selectedParakeetModel, setSelectedParakeetModel] = useState<string>(transcriptModelConfig.provider === 'parakeet' ? transcriptModelConfig.model : 'parakeet-tdt-0.6b-v3-int8');
+    const [customOpenAIEndpoint, setCustomOpenAIEndpoint] = useState<string>('');
 
     // Sync uiProvider when backend config changes (e.g., after model selection or initial load)
     useEffect(() => {
@@ -34,10 +38,20 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
     }, [transcriptModelConfig.provider]);
 
     useEffect(() => {
+        if (transcriptModelConfig.provider === 'localWhisper') {
+            setSelectedWhisperModel(transcriptModelConfig.model);
+        }
+        if (transcriptModelConfig.provider === 'parakeet') {
+            setSelectedParakeetModel(transcriptModelConfig.model);
+        }
+    }, [transcriptModelConfig.provider, transcriptModelConfig.model]);
+
+    useEffect(() => {
         if (transcriptModelConfig.provider === 'localWhisper' || transcriptModelConfig.provider === 'parakeet') {
             setApiKey(null);
         }
     }, [transcriptModelConfig.provider]);
+
 
     const fetchApiKey = async (provider: string) => {
         try {
@@ -50,6 +64,31 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
             setApiKey(null);
         }
     };
+    const fetchCustomOpenAIConfig = async () => {
+        try {
+            const config = await invoke('api_get_custom_openai_config') as any;
+            if (config) {
+                setCustomOpenAIEndpoint(config.endpoint || '');
+                if (typeof config.apiKey !== 'undefined') {
+                    setApiKey(config.apiKey || '');
+                }
+                const modelValue = transcriptModelConfig.model?.trim()
+                    ? transcriptModelConfig.model
+                    : (config.model || 'whisper-1');
+                if (modelValue !== transcriptModelConfig.model) {
+                    setTranscriptModelConfig({ ...transcriptModelConfig, model: modelValue });
+                }
+            }
+        } catch (err) {
+            console.error('Error fetching custom OpenAI config:', err);
+        }
+    };
+
+    useEffect(() => {
+        if (transcriptModelConfig.provider === 'custom-openai') {
+            fetchCustomOpenAIConfig();
+        }
+    }, [transcriptModelConfig.provider]);
     const modelOptions = {
         localWhisper: [], // Model selection handled by ModelManager component
         parakeet: [], // Model selection handled by ParakeetModelManager component
@@ -57,8 +96,10 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
         elevenLabs: ['eleven_multilingual_v2'],
         groq: ['llama-3.3-70b-versatile'],
         openai: ['gpt-4o'],
+        'custom-openai': ['whisper-1'],
     };
-    const requiresApiKey = transcriptModelConfig.provider === 'deepgram' || transcriptModelConfig.provider === 'elevenLabs' || transcriptModelConfig.provider === 'openai' || transcriptModelConfig.provider === 'groq';
+    const isCustomOpenAI = uiProvider === 'custom-openai';
+    const requiresApiKey = uiProvider === 'deepgram' || uiProvider === 'elevenLabs' || uiProvider === 'openai' || uiProvider === 'groq' || uiProvider === 'custom-openai';
 
     const handleInputClick = () => {
         if (isApiKeyLocked) {
@@ -70,6 +111,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
     const handleWhisperModelSelect = (modelName: string) => {
         // Always update config when model is selected, regardless of current provider
         // This ensures the model is set when user switches back
+        setSelectedWhisperModel(modelName);
         setTranscriptModelConfig({
             ...transcriptModelConfig,
             provider: 'localWhisper', // Ensure provider is set correctly
@@ -84,6 +126,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
     const handleParakeetModelSelect = (modelName: string) => {
         // Always update config when model is selected, regardless of current provider
         // This ensures the model is set when user switches back
+        setSelectedParakeetModel(modelName);
         setTranscriptModelConfig({
             ...transcriptModelConfig,
             provider: 'parakeet', // Ensure provider is set correctly
@@ -92,6 +135,39 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
         // Close modal after selection
         if (onModelSelect) {
             onModelSelect();
+        }
+    };
+
+    const canSaveCustomOpenAI = isCustomOpenAI
+        && customOpenAIEndpoint.trim().length > 0
+        && transcriptModelConfig.model.trim().length > 0;
+
+    const saveCustomOpenAISettings = async () => {
+        try {
+            if (!canSaveCustomOpenAI) {
+                toast.error('Please provide a valid endpoint and model.');
+                return;
+            }
+
+            await invoke('api_save_custom_openai_config', {
+                endpoint: customOpenAIEndpoint.trim(),
+                apiKey: apiKey?.trim() || null,
+                model: transcriptModelConfig.model.trim(),
+                maxTokens: null,
+                temperature: null,
+                topP: null,
+            });
+
+            await invoke('api_save_transcript_config', {
+                provider: 'custom-openai',
+                model: transcriptModelConfig.model.trim(),
+                apiKey: null,
+            });
+
+            toast.success('Custom OpenAI transcription settings saved.');
+        } catch (err) {
+            console.error('Failed to save custom OpenAI transcription settings:', err);
+            toast.error('Failed to save Custom OpenAI settings.');
         }
     };
 
@@ -112,8 +188,17 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                 onValueChange={(value) => {
                                     const provider = value as TranscriptModelProps['provider'];
                                     setUiProvider(provider);
+                                    const newModel = provider === 'localWhisper'
+                                        ? selectedWhisperModel
+                                        : provider === 'parakeet'
+                                            ? selectedParakeetModel
+                                            : (modelOptions[provider]?.[0] || '');
+                                    setTranscriptModelConfig({ ...transcriptModelConfig, provider, model: newModel });
                                     if (provider !== 'localWhisper' && provider !== 'parakeet') {
                                         fetchApiKey(provider);
+                                    }
+                                    if (provider === 'custom-openai') {
+                                        fetchCustomOpenAIConfig();
                                     }
                                 }}
                             >
@@ -123,6 +208,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                 <SelectContent>
                                     <SelectItem value="parakeet">⚡ Parakeet (Recommended - Real-time / Accurate)</SelectItem>
                                     <SelectItem value="localWhisper">🏠 Local Whisper (High Accuracy)</SelectItem>
+                                    <SelectItem value="custom-openai">🌐 Custom OpenAI (Remote)</SelectItem>
                                     {/* <SelectItem value="deepgram">☁️ Deepgram (Backup)</SelectItem>
                                     <SelectItem value="elevenLabs">☁️ ElevenLabs</SelectItem>
                                     <SelectItem value="groq">☁️ Groq</SelectItem>
@@ -130,7 +216,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                 </SelectContent>
                             </Select>
 
-                            {uiProvider !== 'localWhisper' && uiProvider !== 'parakeet' && (
+                            {uiProvider !== 'localWhisper' && uiProvider !== 'parakeet' && !isCustomOpenAI && (
                                 <Select
                                     value={transcriptModelConfig.model}
                                     onValueChange={(value) => {
@@ -151,6 +237,33 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
 
                         </div>
                     </div>
+
+                    {isCustomOpenAI && (
+                        <div className="space-y-4">
+                            <div>
+                                <Label className="block text-sm font-medium text-gray-700 mb-1">
+                                    Custom OpenAI Endpoint
+                                </Label>
+                                <Input
+                                    className="focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                                    value={customOpenAIEndpoint}
+                                    onChange={(e) => setCustomOpenAIEndpoint(e.target.value)}
+                                    placeholder="https://your-server/v1"
+                                />
+                            </div>
+                            <div>
+                                <Label className="block text-sm font-medium text-gray-700 mb-1">
+                                    Model
+                                </Label>
+                                <Input
+                                    className="focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                                    value={transcriptModelConfig.model}
+                                    onChange={(e) => setTranscriptModelConfig({ ...transcriptModelConfig, model: e.target.value })}
+                                    placeholder="whisper-1"
+                                />
+                            </div>
+                        </div>
+                    )}
 
                     {uiProvider === 'localWhisper' && (
                         <div className="mt-6">
@@ -217,6 +330,18 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                     </Button>
                                 </div>
                             </div>
+                        </div>
+                    )}
+
+                    {isCustomOpenAI && (
+                        <div className="pt-2">
+                            <Button
+                                type="button"
+                                onClick={saveCustomOpenAISettings}
+                                disabled={!canSaveCustomOpenAI}
+                            >
+                                Save Custom OpenAI Settings
+                            </Button>
                         </div>
                     )}
                 </div>
