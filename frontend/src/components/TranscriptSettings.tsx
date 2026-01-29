@@ -427,11 +427,3 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
         </div >
     )
 }
-
-
-
-
-
-
-
-
