@@ -4,6 +4,7 @@
 
 use super::provider::{TranscriptionError, TranscriptionProvider, TranscriptResult};
 use async_trait::async_trait;
+use log::warn;
 use reqwest::multipart::{Form, Part};
 use reqwest::Client;
 use serde_json::Value;
@@ -36,13 +37,25 @@ impl CustomOpenAIProvider {
     }
 
     fn transcription_url(&self) -> String {
+        self.audio_url("transcriptions")
+    }
+
+    fn translations_url(&self) -> String {
+        self.audio_url("translations")
+    }
+
+    fn audio_url(&self, endpoint: &str) -> String {
         let trimmed = self.endpoint.trim_end_matches('/');
         if trimmed.ends_with("/audio/transcriptions") {
-            trimmed.to_string()
+            let base = trimmed.trim_end_matches("/audio/transcriptions");
+            format!("{}/audio/{}", base, endpoint)
+        } else if trimmed.ends_with("/audio/translations") {
+            let base = trimmed.trim_end_matches("/audio/translations");
+            format!("{}/audio/{}", base, endpoint)
         } else if trimmed.ends_with("/v1") {
-            format!("{}/audio/transcriptions", trimmed)
+            format!("{}/audio/{}", trimmed, endpoint)
         } else {
-            format!("{}/v1/audio/transcriptions", trimmed)
+            format!("{}/v1/audio/{}", trimmed, endpoint)
         }
     }
 
@@ -93,7 +106,34 @@ impl TranscriptionProvider for CustomOpenAIProvider {
             });
         }
 
+        let mut use_translation_endpoint = false;
+        let language = match language {
+            Some(lang) => {
+                let trimmed = lang.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    let normalized = trimmed.to_ascii_lowercase();
+                    match normalized.as_str() {
+                        "auto" => None,
+                        "auto-translate" => {
+                            use_translation_endpoint = true;
+                            None
+                        }
+                        _ => Some(trimmed.to_string()),
+                    }
+                }
+            }
+            None => None,
+        };
+
         let wav_bytes = Self::encode_wav(&audio);
+        let retry_wav_bytes = if use_translation_endpoint {
+            Some(wav_bytes.clone())
+        } else {
+            None
+        };
+
         let part = Part::bytes(wav_bytes)
             .file_name("audio.wav")
             .mime_str("audio/wav")
@@ -103,13 +143,19 @@ impl TranscriptionProvider for CustomOpenAIProvider {
             .part("file", part)
             .text("model", self.model.clone());
 
-        if let Some(lang) = language {
+        if let Some(lang) = language.as_ref() {
             if !lang.trim().is_empty() {
-                form = form.text("language", lang);
+                form = form.text("language", lang.clone());
             }
         }
 
-        let mut request = self.client.post(self.transcription_url()).multipart(form);
+        let url = if use_translation_endpoint {
+            self.translations_url()
+        } else {
+            self.transcription_url()
+        };
+
+        let mut request = self.client.post(url).multipart(form);
         if let Some(api_key) = &self.api_key {
             if !api_key.trim().is_empty() {
                 request = request.bearer_auth(api_key);
@@ -128,6 +174,70 @@ impl TranscriptionProvider for CustomOpenAIProvider {
             .map_err(|e| TranscriptionError::EngineFailed(e.to_string()))?;
 
         if !status.is_success() {
+            if use_translation_endpoint && matches!(status.as_u16(), 404 | 405) {
+                warn!(
+                    "Custom OpenAI endpoint does not support /audio/translations (HTTP {}). Falling back to /audio/transcriptions.",
+                    status
+                );
+                let retry_wav_bytes = retry_wav_bytes.ok_or_else(|| {
+                    TranscriptionError::EngineFailed("Failed to retry request".to_string())
+                })?;
+                let retry_part = Part::bytes(retry_wav_bytes)
+                    .file_name("audio.wav")
+                    .mime_str("audio/wav")
+                    .map_err(|e| TranscriptionError::EngineFailed(e.to_string()))?;
+                let mut retry_form = Form::new()
+                    .part("file", retry_part)
+                    .text("model", self.model.clone());
+                if let Some(lang) = language.as_ref() {
+                    if !lang.trim().is_empty() {
+                        retry_form = retry_form.text("language", lang.clone());
+                    }
+                }
+
+                let mut retry_request = self
+                    .client
+                    .post(self.transcription_url())
+                    .multipart(retry_form);
+                if let Some(api_key) = &self.api_key {
+                    if !api_key.trim().is_empty() {
+                        retry_request = retry_request.bearer_auth(api_key);
+                    }
+                }
+
+                let retry_response = retry_request
+                    .send()
+                    .await
+                    .map_err(|e| TranscriptionError::EngineFailed(e.to_string()))?;
+
+                let retry_status = retry_response.status();
+                let retry_body = retry_response
+                    .text()
+                    .await
+                    .map_err(|e| TranscriptionError::EngineFailed(e.to_string()))?;
+
+                if !retry_status.is_success() {
+                    return Err(TranscriptionError::EngineFailed(format!(
+                        "HTTP {}: {}",
+                        retry_status, retry_body
+                    )));
+                }
+
+                let value: Value = serde_json::from_str(&retry_body)
+                    .map_err(|e| TranscriptionError::EngineFailed(format!("Invalid JSON: {}", e)))?;
+                let text = value
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+
+                return Ok(TranscriptResult {
+                    text,
+                    confidence: None,
+                    is_partial: false,
+                });
+            }
+
             return Err(TranscriptionError::EngineFailed(format!(
                 "HTTP {}: {}",
                 status, body
