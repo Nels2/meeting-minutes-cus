@@ -66,7 +66,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
     };
     const fetchCustomOpenAIConfig = async () => {
         try {
-            const config = await invoke('api_get_custom_openai_config') as any;
+            const config = await invoke('api_get_transcript_custom_openai_config') as any;
             if (config) {
                 setCustomOpenAIEndpoint(config.endpoint || '');
                 if (typeof config.apiKey !== 'undefined') {
@@ -149,7 +149,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                 return;
             }
 
-            await invoke('api_save_custom_openai_config', {
+            await invoke('api_save_transcript_custom_openai_config', {
                 endpoint: customOpenAIEndpoint.trim(),
                 apiKey: apiKey?.trim() || null,
                 model: transcriptModelConfig.model.trim(),

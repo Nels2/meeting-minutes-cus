@@ -180,7 +180,7 @@ impl SettingsRepository {
         let api_key_column = match provider {
             "localWhisper" => "whisperApiKey",
             "parakeet" => return Ok(()), // Parakeet doesn't need an API key, return early
-            "custom-openai" => return Ok(()), // Custom OpenAI stores API key in customOpenAIConfig
+            "custom-openai" => return Ok(()), // Custom OpenAI stores API key in transcript customOpenAIConfig
             "deepgram" => "deepgramApiKey",
             "elevenLabs" => "elevenLabsApiKey",
             "groq" => "groqApiKey",
@@ -214,7 +214,7 @@ impl SettingsRepository {
             "localWhisper" => "whisperApiKey",
             "parakeet" => return Ok(None), // Parakeet doesn't need an API key
             "custom-openai" => {
-                let config = Self::get_custom_openai_config(pool).await?;
+                let config = Self::get_transcript_custom_openai_config(pool).await?;
                 return Ok(config.and_then(|cfg| cfg.api_key));
             }
             "deepgram" => "deepgramApiKey",
@@ -339,6 +339,70 @@ impl SettingsRepository {
             r#"
             INSERT INTO settings (id, provider, model, whisperModel, customOpenAIConfig)
             VALUES ('1', 'custom-openai', $1, 'large-v3', $2)
+            ON CONFLICT(id) DO UPDATE SET
+                customOpenAIConfig = excluded.customOpenAIConfig
+            "#,
+        )
+        .bind(&config.model)
+        .bind(config_json)
+        .execute(pool)
+        .await?;
+
+        Ok(())
+    }
+
+    // ===== TRANSCRIPT CUSTOM OPENAI CONFIG METHODS =====
+
+    /// Gets the transcription Custom OpenAI configuration from JSON
+    pub async fn get_transcript_custom_openai_config(
+        pool: &SqlitePool,
+    ) -> std::result::Result<Option<CustomOpenAIConfig>, sqlx::Error> {
+        use sqlx::Row;
+
+        let row = sqlx::query(
+            r#"
+            SELECT customOpenAIConfig
+            FROM transcript_settings
+            WHERE id = '1'
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(pool)
+        .await?;
+
+        match row {
+            Some(record) => {
+                let config_json: Option<String> = record.get("customOpenAIConfig");
+
+                if let Some(json) = config_json {
+                    let config: CustomOpenAIConfig = serde_json::from_str(&json)
+                        .map_err(|e| sqlx::Error::Protocol(
+                            format!("Invalid JSON in transcript customOpenAIConfig: {}", e).into()
+                        ))?;
+
+                    Ok(Some(config))
+                } else {
+                    Ok(None)
+                }
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Saves the transcription Custom OpenAI configuration as JSON
+    pub async fn save_transcript_custom_openai_config(
+        pool: &SqlitePool,
+        config: &CustomOpenAIConfig,
+    ) -> std::result::Result<(), sqlx::Error> {
+        let config_json = serde_json::to_string(config)
+            .map_err(|e| sqlx::Error::Protocol(
+                format!("Failed to serialize transcript config to JSON: {}", e).into()
+            ))?;
+
+        sqlx::query(
+            r#"
+            INSERT INTO transcript_settings (id, provider, model, customOpenAIConfig)
+            VALUES ('1', 'custom-openai', $1, $2)
             ON CONFLICT(id) DO UPDATE SET
                 customOpenAIConfig = excluded.customOpenAIConfig
             "#,

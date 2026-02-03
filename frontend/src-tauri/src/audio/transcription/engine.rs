@@ -139,7 +139,7 @@ pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) 
         "custom-openai" => {
             info!("🔍 Validating Custom OpenAI transcription config...");
 
-            let custom_config = match crate::api::api::api_get_custom_openai_config(
+            let custom_config = match crate::api::api::api_get_transcript_custom_openai_config(
                 app.clone(),
                 app.clone().state(),
             )
@@ -148,7 +148,7 @@ pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) 
                 Ok(Some(config)) => config,
                 Ok(None) => {
                     return Err(
-                        "Custom OpenAI endpoint is not configured. Please set it in settings."
+                        "Custom OpenAI endpoint is not configured. Please set it in transcription settings."
                             .to_string(),
                     )
                 }
@@ -256,7 +256,7 @@ pub async fn get_or_init_transcription_engine<R: Runtime>(
         "custom-openai" => {
             info!("🌐 Initializing Custom OpenAI transcription provider");
 
-            let custom_config = match crate::api::api::api_get_custom_openai_config(
+            let custom_config = match crate::api::api::api_get_transcript_custom_openai_config(
                 app.clone(),
                 app.clone().state(),
             )
@@ -265,7 +265,7 @@ pub async fn get_or_init_transcription_engine<R: Runtime>(
                 Ok(Some(config)) => config,
                 Ok(None) => {
                     return Err(
-                        "Custom OpenAI endpoint is not configured. Please set it in settings."
+                        "Custom OpenAI endpoint is not configured. Please set it in transcription settings."
                             .to_string(),
                     )
                 }

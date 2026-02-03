@@ -79,12 +79,36 @@ export class ConfigService {
   }
 
   /**
+   * Get transcription custom OpenAI configuration
+   * @returns Promise with CustomOpenAIConfig or null if not configured
+   */
+  async getTranscriptCustomOpenAIConfig(): Promise<CustomOpenAIConfig | null> {
+    return invoke<CustomOpenAIConfig | null>('api_get_transcript_custom_openai_config');
+  }
+
+  /**
    * Save custom OpenAI configuration
    * @param config - CustomOpenAIConfig to save
    * @returns Promise with result status
    */
   async saveCustomOpenAIConfig(config: CustomOpenAIConfig): Promise<{ status: string; message: string }> {
     return invoke<{ status: string; message: string }>('api_save_custom_openai_config', {
+      endpoint: config.endpoint,
+      apiKey: config.apiKey,
+      model: config.model,
+      maxTokens: config.maxTokens,
+      temperature: config.temperature,
+      topP: config.topP,
+    });
+  }
+
+  /**
+   * Save transcription custom OpenAI configuration
+   * @param config - CustomOpenAIConfig to save
+   * @returns Promise with result status
+   */
+  async saveTranscriptCustomOpenAIConfig(config: CustomOpenAIConfig): Promise<{ status: string; message: string }> {
+    return invoke<{ status: string; message: string }>('api_save_transcript_custom_openai_config', {
       endpoint: config.endpoint,
       apiKey: config.apiKey,
       model: config.model,

@@ -1268,6 +1268,120 @@ pub async fn api_get_custom_openai_config<R: Runtime>(
     }
 }
 
+/// Saves the transcription custom OpenAI configuration
+/// This configuration is stored separately from summary settings
+#[tauri::command]
+pub async fn api_save_transcript_custom_openai_config<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    endpoint: String,
+    api_key: Option<String>,
+    model: String,
+    max_tokens: Option<i32>,
+    temperature: Option<f32>,
+    top_p: Option<f32>,
+) -> Result<serde_json::Value, String> {
+    log_info!(
+        "api_save_transcript_custom_openai_config called: endpoint='{}', model='{}'",
+        &endpoint,
+        &model
+    );
+
+    if endpoint.trim().is_empty() {
+        return Err("Endpoint URL is required".to_string());
+    }
+    if model.trim().is_empty() {
+        return Err("Model name is required".to_string());
+    }
+
+    if !endpoint.starts_with("http://") && !endpoint.starts_with("https://") {
+        return Err("Endpoint must start with http:// or https://".to_string());
+    }
+
+    if let Some(temp) = temperature {
+        if !(0.0..=2.0).contains(&temp) {
+            return Err("Temperature must be between 0.0 and 2.0".to_string());
+        }
+    }
+    if let Some(top) = top_p {
+        if !(0.0..=1.0).contains(&top) {
+            return Err("Top P must be between 0.0 and 1.0".to_string());
+        }
+    }
+    if let Some(tokens) = max_tokens {
+        if tokens < 1 {
+            return Err("Max tokens must be at least 1".to_string());
+        }
+    }
+
+    let config = CustomOpenAIConfig {
+        endpoint: endpoint.trim().to_string(),
+        api_key: api_key.filter(|k| !k.trim().is_empty()),
+        model: model.trim().to_string(),
+        max_tokens,
+        temperature,
+        top_p,
+    };
+
+    let pool = state.db_manager.pool();
+
+    match SettingsRepository::save_transcript_custom_openai_config(pool, &config).await {
+        Ok(()) => {
+            log_info!(
+                "✅ Successfully saved transcript custom OpenAI config for endpoint: {}",
+                config.endpoint
+            );
+            Ok(serde_json::json!({
+                "status": "success",
+                "message": "Transcript custom OpenAI configuration saved successfully"
+            }))
+        }
+        Err(e) => {
+            log_error!("❌ Failed to save transcript custom OpenAI config: {}", e);
+            Err(format!(
+                "Failed to save transcript custom OpenAI configuration: {}",
+                e
+            ))
+        }
+    }
+}
+
+/// Gets the transcription custom OpenAI configuration
+#[tauri::command]
+pub async fn api_get_transcript_custom_openai_config<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+) -> Result<Option<CustomOpenAIConfig>, String> {
+    log_info!("api_get_transcript_custom_openai_config called");
+
+    let pool = state.db_manager.pool();
+
+    match SettingsRepository::get_transcript_custom_openai_config(pool).await {
+        Ok(config) => {
+            if let Some(ref c) = config {
+                log_info!(
+                    "✅ Found transcript custom OpenAI config: endpoint='{}', model='{}'",
+                    c.endpoint,
+                    c.model
+                );
+            } else {
+                log_info!("No transcript custom OpenAI config found");
+            }
+            Ok(config)
+        }
+        Err(e) => {
+            log_error!(
+                "❌ Failed to get transcript custom OpenAI config: {}",
+                e
+            );
+            Err(format!(
+                "Failed to get transcript custom OpenAI configuration: {}",
+                e
+            ))
+        }
+    }
+}
+
 /// Tests the connection to a custom OpenAI-compatible endpoint
 /// Makes a minimal request to verify the endpoint is reachable and responds correctly
 #[tauri::command]

@@ -127,4 +127,8 @@ pub struct TranscriptSetting {
     #[sqlx(rename = "openaiApiKey")]
     #[serde(rename = "openaiApiKey")]
     pub openai_api_key: Option<String>,
+    /// Custom OpenAI-compatible endpoint configuration stored as JSON (transcription scope)
+    #[sqlx(rename = "customOpenAIConfig")]
+    #[serde(rename = "customOpenAIConfig")]
+    pub custom_openai_config: Option<String>,
 }
