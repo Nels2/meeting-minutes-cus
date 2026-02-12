@@ -28,6 +28,12 @@ pub struct CustomOpenAIConfig {
     /// Top-P sampling parameter (0.0-1.0, optional)
     #[serde(rename = "topP")]
     pub top_p: Option<f32>,
+    /// Transcription API mode (audio or chat). Optional; defaults to audio when omitted.
+    #[serde(rename = "transcriptionApi")]
+    pub transcription_api: Option<String>,
+    /// Optional prompt for chat-based transcription.
+    #[serde(rename = "transcriptionPrompt")]
+    pub transcription_prompt: Option<String>,
 }
 
 pub mod commands;

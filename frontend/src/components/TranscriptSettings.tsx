@@ -4,6 +4,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Input } from './ui/input';
 import { Button } from './ui/button';
 import { Label } from './ui/label';
+import { Textarea } from './ui/textarea';
 import { Eye, EyeOff, Lock, Unlock } from 'lucide-react';
 import { toast } from 'sonner';
 import { ModelManager } from './WhisperModelManager';
@@ -31,6 +32,9 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
     const [selectedWhisperModel, setSelectedWhisperModel] = useState<string>(transcriptModelConfig.provider === 'localWhisper' ? transcriptModelConfig.model : 'small');
     const [selectedParakeetModel, setSelectedParakeetModel] = useState<string>(transcriptModelConfig.provider === 'parakeet' ? transcriptModelConfig.model : 'parakeet-tdt-0.6b-v3-int8');
     const [customOpenAIEndpoint, setCustomOpenAIEndpoint] = useState<string>('');
+    const [customOpenAITranscriptionApi, setCustomOpenAITranscriptionApi] = useState<string>('audio');
+    const [customOpenAITranscriptionPrompt, setCustomOpenAITranscriptionPrompt] = useState<string>('');
+    const [isTestingChat, setIsTestingChat] = useState<boolean>(false);
 
     // Sync uiProvider when backend config changes (e.g., after model selection or initial load)
     useEffect(() => {
@@ -72,6 +76,8 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                 if (typeof config.apiKey !== 'undefined') {
                     setApiKey(config.apiKey || '');
                 }
+                setCustomOpenAITranscriptionApi(config.transcriptionApi || 'audio');
+                setCustomOpenAITranscriptionPrompt(config.transcriptionPrompt || '');
                 const modelValue = transcriptModelConfig.model?.trim()
                     ? transcriptModelConfig.model
                     : (config.model || 'whisper-1');
@@ -156,6 +162,8 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                 maxTokens: null,
                 temperature: null,
                 topP: null,
+                transcriptionApi: customOpenAITranscriptionApi,
+                transcriptionPrompt: customOpenAITranscriptionPrompt.trim() || null,
             });
 
             await invoke('api_save_transcript_config', {
@@ -168,6 +176,35 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
         } catch (err) {
             console.error('Failed to save custom OpenAI transcription settings:', err);
             toast.error('Failed to save Custom OpenAI settings.');
+        }
+    };
+
+    const testChatTranscription = async () => {
+        if (!customOpenAIEndpoint.trim() || !transcriptModelConfig.model.trim()) {
+            toast.error('Please provide a valid endpoint and model.');
+            return;
+        }
+
+        setIsTestingChat(true);
+        try {
+            const result = await invoke('api_test_transcript_custom_openai_chat', {
+                endpoint: customOpenAIEndpoint.trim(),
+                apiKey: apiKey?.trim() || null,
+                model: transcriptModelConfig.model.trim(),
+                prompt: customOpenAITranscriptionPrompt.trim() || null,
+            }) as any;
+
+            const textPreview = (result?.text || '').trim();
+            if (textPreview) {
+                toast.success(`Chat test succeeded: ${textPreview.slice(0, 160)}`);
+            } else {
+                toast.success(result?.message || 'Chat test succeeded.');
+            }
+        } catch (err) {
+            console.error('Chat transcription test failed:', err);
+            toast.error('Chat transcription test failed. Check endpoint and model.');
+        } finally {
+            setIsTestingChat(false);
         }
     };
 
@@ -262,6 +299,36 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                     placeholder="whisper-1"
                                 />
                             </div>
+                            <div>
+                                <Label className="block text-sm font-medium text-gray-700 mb-1">
+                                    Transcription API
+                                </Label>
+                                <Select
+                                    value={customOpenAITranscriptionApi}
+                                    onValueChange={(value) => setCustomOpenAITranscriptionApi(value)}
+                                >
+                                    <SelectTrigger className='focus:ring-1 focus:ring-blue-500 focus:border-blue-500'>
+                                        <SelectValue placeholder="Select API scheme" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="audio">Audio (Whisper-compatible)</SelectItem>
+                                        <SelectItem value="chat">Chat/Vision (Multimodal)</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                            {customOpenAITranscriptionApi === 'chat' && (
+                                <div>
+                                    <Label className="block text-sm font-medium text-gray-700 mb-1">
+                                        Chat Prompt (Optional)
+                                    </Label>
+                                    <Textarea
+                                        className="focus:ring-1 focus:ring-blue-500 focus:border-blue-500 min-h-[96px]"
+                                        value={customOpenAITranscriptionPrompt}
+                                        onChange={(e) => setCustomOpenAITranscriptionPrompt(e.target.value)}
+                                        placeholder="Leave empty to use the default JSON prompt (key: text)."
+                                    />
+                                </div>
+                            )}
                         </div>
                     )}
 
@@ -342,6 +409,17 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                             >
                                 Save Custom OpenAI Settings
                             </Button>
+                            {customOpenAITranscriptionApi === 'chat' && (
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    className="ml-2"
+                                    onClick={testChatTranscription}
+                                    disabled={isTestingChat || !customOpenAIEndpoint.trim() || !transcriptModelConfig.model.trim()}
+                                >
+                                    {isTestingChat ? 'Testing Chat...' : 'Test Chat Transcription'}
+                                </Button>
+                            )}
                         </div>
                     )}
                 </div>

@@ -34,6 +34,8 @@ export interface CustomOpenAIConfig {
   maxTokens: number | null;
   temperature: number | null;
   topP: number | null;
+  transcriptionApi?: string | null;
+  transcriptionPrompt?: string | null;
 }
 
 export interface RecordingPreferences {
@@ -115,6 +117,8 @@ export class ConfigService {
       maxTokens: config.maxTokens,
       temperature: config.temperature,
       topP: config.topP,
+      transcriptionApi: config.transcriptionApi ?? null,
+      transcriptionPrompt: config.transcriptionPrompt ?? null,
     });
   }
 

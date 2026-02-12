@@ -89,6 +89,7 @@ which = "6.0.1"
 
 # Bytes
 bytemuck = "1.16.1"
+base64 = "0.22"
 
 # EBU R128 loudness normalization (professional broadcast standard)
 ebur128 = "0.1"

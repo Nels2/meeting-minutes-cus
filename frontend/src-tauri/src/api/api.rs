@@ -5,6 +5,8 @@ use tauri::{AppHandle, Runtime};
 use tauri_plugin_store::StoreExt;
 
 use crate::{
+    audio::transcription::custom_openai_provider::CustomOpenAIProvider,
+    audio::transcription::provider::TranscriptionProvider,
     database::{
         models::MeetingModel,
         repositories::{
@@ -1222,6 +1224,8 @@ pub async fn api_save_custom_openai_config<R: Runtime>(
         max_tokens,
         temperature,
         top_p,
+        transcription_api: None,
+        transcription_prompt: None,
     };
 
     let pool = state.db_manager.pool();
@@ -1280,6 +1284,8 @@ pub async fn api_save_transcript_custom_openai_config<R: Runtime>(
     max_tokens: Option<i32>,
     temperature: Option<f32>,
     top_p: Option<f32>,
+    transcription_api: Option<String>,
+    transcription_prompt: Option<String>,
 ) -> Result<serde_json::Value, String> {
     log_info!(
         "api_save_transcript_custom_openai_config called: endpoint='{}', model='{}'",
@@ -1314,6 +1320,22 @@ pub async fn api_save_transcript_custom_openai_config<R: Runtime>(
         }
     }
 
+    let transcription_api_raw = transcription_api
+        .as_deref()
+        .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "audio".to_string());
+
+    let transcription_api = match transcription_api_raw.as_str() {
+        "audio" => "audio".to_string(),
+        "chat" | "vision" | "chat-vision" | "chat/vision" => "chat".to_string(),
+        _ => {
+            return Err(
+                "Transcription API must be 'audio' or 'chat' (chat/vision)".to_string(),
+            )
+        }
+    };
+
     let config = CustomOpenAIConfig {
         endpoint: endpoint.trim().to_string(),
         api_key: api_key.filter(|k| !k.trim().is_empty()),
@@ -1321,6 +1343,11 @@ pub async fn api_save_transcript_custom_openai_config<R: Runtime>(
         max_tokens,
         temperature,
         top_p,
+        transcription_api: Some(transcription_api),
+        transcription_prompt: transcription_prompt
+            .as_deref()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty()),
     };
 
     let pool = state.db_manager.pool();
@@ -1380,6 +1407,66 @@ pub async fn api_get_transcript_custom_openai_config<R: Runtime>(
             ))
         }
     }
+}
+
+/// Tests chat-based transcription for a custom OpenAI-compatible endpoint
+/// Sends a short silent audio clip through /chat/completions with input_audio payload
+#[tauri::command]
+pub async fn api_test_transcript_custom_openai_chat<R: Runtime>(
+    _app: AppHandle<R>,
+    endpoint: String,
+    api_key: Option<String>,
+    model: String,
+    prompt: Option<String>,
+) -> Result<serde_json::Value, String> {
+    if endpoint.trim().is_empty() {
+        return Err("Endpoint URL is required".to_string());
+    }
+    if model.trim().is_empty() {
+        return Err("Model name is required".to_string());
+    }
+    if !endpoint.starts_with("http://") && !endpoint.starts_with("https://") {
+        return Err("Endpoint must start with http:// or https://".to_string());
+    }
+
+    // 0.5s of silence at 16kHz
+    let sample_rate = 16_000usize;
+    let duration_seconds = 0.5f32;
+    let sample_count = (sample_rate as f32 * duration_seconds).round() as usize;
+    let audio = vec![0.0f32; sample_count.max(1)];
+
+    let provider = CustomOpenAIProvider::new(
+        endpoint.trim().to_string(),
+        api_key.filter(|k| !k.trim().is_empty()),
+        model.trim().to_string(),
+        Some("chat".to_string()),
+        prompt.and_then(|p| {
+            let trimmed = p.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        }),
+    );
+
+    let result = provider
+        .transcribe(audio, None)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let text = result.text.trim().to_string();
+    let message = if text.is_empty() {
+        "Chat transcription succeeded (silence produced empty transcript).".to_string()
+    } else {
+        "Chat transcription succeeded.".to_string()
+    };
+
+    Ok(serde_json::json!({
+        "status": "success",
+        "message": message,
+        "text": text
+    }))
 }
 
 /// Tests the connection to a custom OpenAI-compatible endpoint

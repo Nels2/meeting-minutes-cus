@@ -280,7 +280,7 @@ pub async fn get_or_init_transcription_engine<R: Runtime>(
             let model_name = if !transcript_config.model.trim().is_empty() {
                 transcript_config.model.clone()
             } else {
-                custom_config.model
+                custom_config.model.clone()
             };
 
             if model_name.trim().is_empty() {
@@ -291,6 +291,8 @@ pub async fn get_or_init_transcription_engine<R: Runtime>(
                 custom_config.endpoint,
                 custom_config.api_key,
                 model_name,
+                custom_config.transcription_api,
+                custom_config.transcription_prompt,
             );
 
             Ok(TranscriptionEngine::Provider(Arc::new(provider)))
