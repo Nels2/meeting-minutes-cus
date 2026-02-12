@@ -1469,7 +1469,6 @@ pub async fn api_test_transcript_custom_openai_chat<R: Runtime>(
     }))
 }
 
-
 /// Tests the connection to a custom OpenAI-compatible endpoint
 /// Makes a minimal request to verify the endpoint is reachable and responds correctly
 #[tauri::command]
