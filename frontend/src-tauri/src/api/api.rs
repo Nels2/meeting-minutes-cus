@@ -1410,7 +1410,7 @@ pub async fn api_get_transcript_custom_openai_config<R: Runtime>(
 }
 
 /// Tests chat-based transcription for a custom OpenAI-compatible endpoint
-/// Sends a short silent audio clip through /chat/completions with input_audio payload
+/// Sends a short silent audio clip through /chat/completions (input_audio/audio_url fallback)
 #[tauri::command]
 pub async fn api_test_transcript_custom_openai_chat<R: Runtime>(
     _app: AppHandle<R>,

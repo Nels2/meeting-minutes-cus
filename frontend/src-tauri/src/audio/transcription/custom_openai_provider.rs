@@ -5,7 +5,9 @@
 use super::provider::{TranscriptionError, TranscriptionProvider, TranscriptResult};
 use async_trait::async_trait;
 use base64::{engine::general_purpose, Engine as _};
+use futures_util::StreamExt;
 use log::warn;
+use reqwest::header::CONTENT_TYPE;
 use reqwest::multipart::{Form, Part};
 use reqwest::Client;
 use serde_json::Value;
@@ -15,6 +17,10 @@ const WHISPER_SAMPLE_RATE: u32 = 16_000;
 const WAV_BITS_PER_SAMPLE: u16 = 16;
 const WAV_CHANNELS: u16 = 1;
 const DEFAULT_CHAT_PROMPT: &str = "You are a speech-to-text engine. Transcribe the audio with high accuracy. Return a JSON object with a single key \"text\" containing the transcript. Do not include any other keys or commentary.";
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+const CHAT_CHUNK_SECONDS: f32 = 60.0;
+const CHAT_CHUNK_OVERLAP_SECONDS: f32 = 1.0;
+const CHAT_DEDUP_WINDOW: usize = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TranscriptionApiMode {
@@ -160,6 +166,70 @@ impl CustomOpenAIProvider {
         prompt
     }
 
+    fn chunk_audio_for_chat(audio: &[f32]) -> Vec<Vec<f32>> {
+        let max_samples = (CHAT_CHUNK_SECONDS * WHISPER_SAMPLE_RATE as f32).round() as usize;
+        if audio.len() <= max_samples {
+            return vec![audio.to_vec()];
+        }
+
+        let overlap_samples =
+            (CHAT_CHUNK_OVERLAP_SECONDS * WHISPER_SAMPLE_RATE as f32).round() as usize;
+        let step = max_samples.saturating_sub(overlap_samples).max(1);
+
+        let mut chunks = Vec::new();
+        let mut start = 0usize;
+        while start < audio.len() {
+            let end = (start + max_samples).min(audio.len());
+            chunks.push(audio[start..end].to_vec());
+            if end == audio.len() {
+                break;
+            }
+            start = start.saturating_add(step);
+        }
+
+        chunks
+    }
+
+    fn merge_transcripts_with_overlap(chunks: Vec<String>) -> String {
+        let mut combined = String::new();
+
+        for chunk in chunks {
+            let trimmed = chunk.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            if combined.is_empty() {
+                combined = trimmed.to_string();
+                continue;
+            }
+
+            let combined_chars: Vec<char> = combined.chars().collect();
+            let next_chars: Vec<char> = trimmed.chars().collect();
+            let max_overlap = CHAT_DEDUP_WINDOW
+                .min(combined_chars.len())
+                .min(next_chars.len());
+
+            let mut overlap = 0usize;
+            for len in (1..=max_overlap).rev() {
+                if combined_chars[combined_chars.len() - len..] == next_chars[..len] {
+                    overlap = len;
+                    break;
+                }
+            }
+
+            if overlap > 0 {
+                let remaining: String = next_chars[overlap..].iter().collect();
+                combined.push_str(&remaining);
+            } else {
+                combined.push(' ');
+                combined.push_str(trimmed);
+            }
+        }
+
+        combined
+    }
+
     fn extract_chat_text(value: &Value) -> Option<String> {
         let content = value
             .get("choices")
@@ -233,6 +303,26 @@ impl CustomOpenAIProvider {
         None
     }
 
+    fn extract_stream_delta_text(value: &Value) -> Option<String> {
+        let choice = value.get("choices")?.get(0)?;
+
+        if let Some(delta) = choice.get("delta") {
+            if let Some(content) = delta.get("content").and_then(|v| v.as_str()) {
+                return Some(content.to_string());
+            }
+            if let Some(text) = delta.get("text").and_then(|v| v.as_str()) {
+                return Some(text.to_string());
+            }
+        }
+
+        if let Some(text) = choice.get("text").and_then(|v| v.as_str()) {
+            return Some(text.to_string());
+        }
+
+        // Fallback for servers that stream full message content
+        Self::extract_chat_text(value)
+    }
+
     fn normalize_chat_output(text: &str) -> String {
         let trimmed = text.trim();
         if trimmed.is_empty() {
@@ -259,6 +349,108 @@ impl CustomOpenAIProvider {
         }
 
         trimmed.to_string()
+    }
+
+    async fn read_chat_streaming_response(
+        response: reqwest::Response,
+    ) -> Result<String, TranscriptionError> {
+        let mut stream = response.bytes_stream();
+        let mut buffer = String::new();
+        let mut collected = String::new();
+
+        loop {
+            let next_chunk = tokio::time::timeout(STREAM_IDLE_TIMEOUT, stream.next()).await;
+            match next_chunk {
+                Ok(Some(Ok(chunk))) => {
+                    let chunk_text = String::from_utf8_lossy(&chunk);
+                    buffer.push_str(&chunk_text);
+
+                    while let Some(idx) = buffer.find('\n') {
+                        let line = buffer[..idx].trim().to_string();
+                        buffer = buffer[idx + 1..].to_string();
+
+                        if line.is_empty() {
+                            continue;
+                        }
+
+                        let data = match line.strip_prefix("data:") {
+                            Some(payload) => payload.trim(),
+                            None => continue,
+                        };
+
+                        if data == "[DONE]" {
+                            if collected.trim().is_empty() {
+                                return Err(TranscriptionError::EngineFailed(
+                                    "Chat transcription response missing content".to_string(),
+                                ));
+                            }
+                            return Ok(collected);
+                        }
+
+                        if let Ok(value) = serde_json::from_str::<Value>(data) {
+                            if let Some(delta) = Self::extract_stream_delta_text(&value) {
+                                if delta.starts_with(&collected) {
+                                    let new_part = &delta[collected.len()..];
+                                    collected.push_str(new_part);
+                                } else {
+                                    collected.push_str(&delta);
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(Some(Err(e))) => {
+                    return Err(TranscriptionError::EngineFailed(e.to_string()));
+                }
+                Ok(None) => break,
+                Err(_) => {
+                    if collected.trim().is_empty() {
+                        return Err(TranscriptionError::EngineFailed(
+                            "Chat transcription stream timed out".to_string(),
+                        ));
+                    }
+                    warn!("Chat transcription stream idle timeout; returning partial output");
+                    return Ok(collected);
+                }
+            }
+        }
+
+        if collected.trim().is_empty() {
+            Err(TranscriptionError::EngineFailed(
+                "Chat transcription response missing content".to_string(),
+            ))
+        } else {
+            Ok(collected)
+        }
+    }
+
+    async fn read_chat_response(
+        response: reqwest::Response,
+    ) -> Result<String, TranscriptionError> {
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+
+        let is_event_stream = content_type.contains("text/event-stream");
+
+        if is_event_stream {
+            return Self::read_chat_streaming_response(response).await;
+        }
+
+        let body = response
+            .text()
+            .await
+            .map_err(|e| TranscriptionError::EngineFailed(e.to_string()))?;
+
+        if let Ok(value) = serde_json::from_str::<Value>(&body) {
+            if let Some(text) = Self::extract_chat_text(&value) {
+                return Ok(text);
+            }
+        }
+
+        Ok(body)
     }
 
     async fn transcribe_audio(
@@ -399,129 +591,141 @@ impl CustomOpenAIProvider {
         })
     }
 
+    async fn transcribe_chat_single(
+        &self,
+        audio: Vec<f32>,
+        prompt: &str,
+    ) -> Result<String, TranscriptionError> {
+        let wav_bytes = Self::encode_wav(&audio);
+        let audio_b64 = general_purpose::STANDARD.encode(&wav_bytes);
+        let data_url = format!("data:audio/wav;base64,{}", audio_b64.as_str());
+
+        let chat_payloads = vec![
+            (
+                "audio_url",
+                serde_json::json!([
+                    { "type": "audio_url", "audio_url": { "url": data_url } },
+                    { "type": "text", "text": prompt }
+                ])
+            ),
+            (
+                "input_audio",
+                serde_json::json!([
+                    { "type": "text", "text": prompt },
+                    { "type": "input_audio", "input_audio": { "data": audio_b64.clone(), "format": "wav" } }
+                ])
+            ),
+            (
+                "audio",
+                serde_json::json!([
+                    { "type": "text", "text": prompt },
+                    { "type": "audio", "audio": { "data": audio_b64, "format": "wav" } }
+                ])
+            ),
+        ];
+
+        let mut last_error: Option<String> = None;
+
+        for (label, content) in chat_payloads {
+            for stream in [false, true] {
+                let mut request_body = serde_json::json!({
+                    "model": self.model.clone(),
+                    "messages": [
+                        { "role": "user", "content": content.clone() }
+                    ],
+                    "temperature": 0
+                });
+
+                if stream {
+                    request_body["stream"] = serde_json::json!(true);
+                }
+
+                let mut request = self.client.post(self.chat_url()).json(&request_body);
+                if let Some(api_key) = &self.api_key {
+                    if !api_key.trim().is_empty() {
+                        request = request.bearer_auth(api_key);
+                    }
+                }
+
+                let response = request
+                    .send()
+                    .await
+                    .map_err(|e| TranscriptionError::EngineFailed(e.to_string()))?;
+
+                let status = response.status();
+                if !status.is_success() {
+                    let body = response
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "Unknown error".to_string());
+                    let message = format!("HTTP {}: {}", status, body);
+                    if matches!(status.as_u16(), 400 | 415 | 422) {
+                        warn!(
+                            "Chat transcription payload '{}' failed (stream={}) with {}. Trying fallback.",
+                            label, stream, message
+                        );
+                        last_error = Some(message);
+                        continue;
+                    }
+                    return Err(TranscriptionError::EngineFailed(message));
+                }
+
+                let raw_text = match Self::read_chat_response(response).await {
+                    Ok(text) => text,
+                    Err(e) => {
+                        last_error = Some(e.to_string());
+                        continue;
+                    }
+                };
+
+                let text = Self::normalize_chat_output(&raw_text);
+                if text.trim().is_empty() {
+                    last_error = Some("Chat transcription response missing content".to_string());
+                    continue;
+                }
+
+                return Ok(text);
+            }
+        }
+
+        Err(TranscriptionError::EngineFailed(
+            last_error.unwrap_or_else(|| "Chat transcription failed".to_string()),
+        ))
+    }
+
     async fn transcribe_chat(
         &self,
         audio: Vec<f32>,
         language: Option<String>,
         translate: bool,
     ) -> Result<TranscriptResult, TranscriptionError> {
-        let wav_bytes = Self::encode_wav(&audio);
-        let audio_b64 = general_purpose::STANDARD.encode(wav_bytes);
         let prompt = self.build_chat_prompt(language.as_deref(), translate);
+        let chunks = Self::chunk_audio_for_chat(&audio);
+        let total_chunks = chunks.len();
 
-        let content = serde_json::json!([
-            { "type": "text", "text": prompt.clone() },
-            { "type": "input_audio", "input_audio": { "data": audio_b64.clone(), "format": "wav" } }
-        ]);
-
-        let request_body = serde_json::json!({
-            "model": self.model.clone(),
-            "messages": [
-                { "role": "user", "content": content }
-            ],
-            "temperature": 0
-        });
-
-        let mut request = self.client.post(self.chat_url()).json(&request_body);
-        if let Some(api_key) = &self.api_key {
-            if !api_key.trim().is_empty() {
-                request = request.bearer_auth(api_key);
-            }
-        }
-
-        let response = request
-            .send()
-            .await
-            .map_err(|e| TranscriptionError::EngineFailed(e.to_string()))?;
-
-        let status = response.status();
-        let body = response
-            .text()
-            .await
-            .map_err(|e| TranscriptionError::EngineFailed(e.to_string()))?;
-
-        if !status.is_success() && matches!(status.as_u16(), 400 | 415 | 422) {
+        if total_chunks > 1 {
             warn!(
-                "Chat transcription failed with status {}. Retrying with alternative payload format.",
-                status
+                "Chat transcription chunking enabled: {} chunks (~{:.1}s each)",
+                total_chunks,
+                CHAT_CHUNK_SECONDS
             );
-
-            let alt_content = serde_json::json!([
-                { "type": "text", "text": prompt },
-                { "type": "audio", "audio": { "data": audio_b64, "format": "wav" } }
-            ]);
-
-            let alt_body = serde_json::json!({
-                "model": self.model.clone(),
-                "messages": [
-                    { "role": "user", "content": alt_content }
-                ],
-                "temperature": 0
-            });
-
-            let mut retry_request = self.client.post(self.chat_url()).json(&alt_body);
-            if let Some(api_key) = &self.api_key {
-                if !api_key.trim().is_empty() {
-                    retry_request = retry_request.bearer_auth(api_key);
-                }
-            }
-
-            let retry_response = retry_request
-                .send()
-                .await
-                .map_err(|e| TranscriptionError::EngineFailed(e.to_string()))?;
-
-            let retry_status = retry_response.status();
-            let retry_body = retry_response
-                .text()
-                .await
-                .map_err(|e| TranscriptionError::EngineFailed(e.to_string()))?;
-
-            if !retry_status.is_success() {
-                return Err(TranscriptionError::EngineFailed(format!(
-                    "HTTP {}: {}",
-                    retry_status, retry_body
-                )));
-            }
-
-            let value: Value = serde_json::from_str(&retry_body)
-                .map_err(|e| TranscriptionError::EngineFailed(format!("Invalid JSON: {}", e)))?;
-            let raw_text = Self::extract_chat_text(&value).unwrap_or_default();
-            let text = Self::normalize_chat_output(&raw_text);
-
-            if text.trim().is_empty() {
-                return Err(TranscriptionError::EngineFailed(
-                    "Chat transcription response missing content".to_string(),
-                ));
-            }
-
-            return Ok(TranscriptResult {
-                text,
-                confidence: None,
-                is_partial: false,
-            });
         }
 
-        if !status.is_success() {
-            return Err(TranscriptionError::EngineFailed(format!(
-                "HTTP {}: {}",
-                status, body
-            )));
+        let mut results = Vec::new();
+        for chunk in chunks.into_iter() {
+            let text = self.transcribe_chat_single(chunk, &prompt).await?;
+            results.push(text);
         }
 
-        let value: Value = serde_json::from_str(&body)
-            .map_err(|e| TranscriptionError::EngineFailed(format!("Invalid JSON: {}", e)))?;
-        let raw_text = Self::extract_chat_text(&value).unwrap_or_default();
-        let text = Self::normalize_chat_output(&raw_text);
-
-        if text.trim().is_empty() {
+        let merged = Self::merge_transcripts_with_overlap(results);
+        if merged.trim().is_empty() {
             return Err(TranscriptionError::EngineFailed(
                 "Chat transcription response missing content".to_string(),
             ));
         }
 
         Ok(TranscriptResult {
-            text,
+            text: merged,
             confidence: None,
             is_partial: false,
         })
