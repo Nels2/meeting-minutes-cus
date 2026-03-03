@@ -29,6 +29,41 @@ pub struct SettingsRepository;
 // NOTE: Handle data exclusion in the higher layer as this is database abstraction layer(using SELECT *)
 
 impl SettingsRepository {
+    async fn column_exists(
+        pool: &SqlitePool,
+        table: &str,
+        column: &str,
+    ) -> std::result::Result<bool, sqlx::Error> {
+        let query = format!(
+            "SELECT 1 FROM pragma_table_info('{}') WHERE name = '{}' LIMIT 1",
+            table, column
+        );
+        let exists: Option<i64> = sqlx::query_scalar(&query).fetch_optional(pool).await?;
+        Ok(exists.is_some())
+    }
+
+    async fn ensure_custom_openai_config_column(
+        pool: &SqlitePool,
+    ) -> std::result::Result<(), sqlx::Error> {
+        if !Self::column_exists(pool, "settings", "customOpenAIConfig").await? {
+            sqlx::query("ALTER TABLE settings ADD COLUMN customOpenAIConfig TEXT")
+                .execute(pool)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn ensure_transcript_custom_openai_config_column(
+        pool: &SqlitePool,
+    ) -> std::result::Result<(), sqlx::Error> {
+        if !Self::column_exists(pool, "transcript_settings", "customOpenAIConfig").await? {
+            sqlx::query("ALTER TABLE transcript_settings ADD COLUMN customOpenAIConfig TEXT")
+                .execute(pool)
+                .await?;
+        }
+        Ok(())
+    }
+
     pub async fn get_model_config(
         pool: &SqlitePool,
     ) -> std::result::Result<Option<Setting>, sqlx::Error> {
@@ -284,6 +319,8 @@ impl SettingsRepository {
     ) -> std::result::Result<Option<CustomOpenAIConfig>, sqlx::Error> {
         use sqlx::Row;
 
+        Self::ensure_custom_openai_config_column(pool).await?;
+
         let row = sqlx::query(
             r#"
             SELECT customOpenAIConfig
@@ -328,6 +365,8 @@ impl SettingsRepository {
         pool: &SqlitePool,
         config: &CustomOpenAIConfig,
     ) -> std::result::Result<(), sqlx::Error> {
+        Self::ensure_custom_openai_config_column(pool).await?;
+
         // Serialize config to JSON
         let config_json = serde_json::to_string(config)
             .map_err(|e| sqlx::Error::Protocol(
@@ -358,6 +397,8 @@ impl SettingsRepository {
         pool: &SqlitePool,
     ) -> std::result::Result<Option<CustomOpenAIConfig>, sqlx::Error> {
         use sqlx::Row;
+
+        Self::ensure_transcript_custom_openai_config_column(pool).await?;
 
         let row = sqlx::query(
             r#"
@@ -394,6 +435,8 @@ impl SettingsRepository {
         pool: &SqlitePool,
         config: &CustomOpenAIConfig,
     ) -> std::result::Result<(), sqlx::Error> {
+        Self::ensure_transcript_custom_openai_config_column(pool).await?;
+
         let config_json = serde_json::to_string(config)
             .map_err(|e| sqlx::Error::Protocol(
                 format!("Failed to serialize transcript config to JSON: {}", e).into()
