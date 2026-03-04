@@ -155,8 +155,14 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                 return;
             }
 
+            const endpoint = customOpenAIEndpoint.trim();
+            if (!endpoint.startsWith('http://') && !endpoint.startsWith('https://')) {
+                toast.error('Endpoint must start with http:// or https:// (e.g. http://localhost:8080/v1)');
+                return;
+            }
+
             await invoke('api_save_transcript_custom_openai_config', {
-                endpoint: customOpenAIEndpoint.trim(),
+                endpoint: endpoint,
                 apiKey: apiKey?.trim() || null,
                 model: transcriptModelConfig.model.trim(),
                 maxTokens: null,
@@ -175,7 +181,8 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
             toast.success('Custom OpenAI transcription settings saved.');
         } catch (err) {
             console.error('Failed to save custom OpenAI transcription settings:', err);
-            toast.error('Failed to save Custom OpenAI settings.');
+            const message = typeof err === 'string' ? err : 'Failed to save Custom OpenAI settings.';
+            toast.error(message);
         }
     };
 

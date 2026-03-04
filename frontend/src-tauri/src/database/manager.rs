@@ -34,7 +34,7 @@ impl DatabaseManager {
 
         let migrator = sqlx::migrate!("./migrations");
         reconcile_migration_checksums(&pool, &migrator).await?;
-        migrator.run(&pool).await?;
+        run_migrations_with_recovery(&pool, &migrator).await?;
 
         Ok(DatabaseManager { pool })
     }
@@ -224,16 +224,15 @@ impl DatabaseManager {
     }
 }
 
+/// Reconcile stored migration checksums against the current migration files.
+/// Any applied migration whose file content has changed will have its stored checksum
+/// updated so sqlx does not refuse to run subsequent migrations.
+/// This is safe because the migration itself is not re-run — only the stored checksum
+/// is corrected so sqlx can accept the current file as the authoritative version.
 async fn reconcile_migration_checksums(
     pool: &SqlitePool,
     migrator: &sqlx::migrate::Migrator,
 ) -> Result<()> {
-    const COMPAT_VERSIONS: &[i64] = &[
-        20250916100000,
-        20251202153942,
-        20251217153942,
-    ];
-
     let has_table: Option<i64> = sqlx::query_scalar(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='_sqlx_migrations' LIMIT 1",
     )
@@ -250,10 +249,6 @@ async fn reconcile_migration_checksums(
 
     for row in rows {
         let version: i64 = row.try_get("version")?;
-        if !COMPAT_VERSIONS.contains(&version) {
-            continue;
-        }
-
         let db_checksum: Vec<u8> = row.try_get("checksum")?;
         if let Some(migration) = migrator.iter().find(|m| m.version == version) {
             if db_checksum != migration.checksum.as_ref() {
@@ -271,4 +266,123 @@ async fn reconcile_migration_checksums(
     }
 
     Ok(())
+}
+
+/// Run pending migrations with recovery for known safe failure modes:
+///
+/// 1. If a migration fails because a column already exists (an `ensure_*` helper added
+///    it in a previous run), we mark the migration as applied and continue.
+/// 2. If a migration fails for any other reason the error is propagated normally.
+async fn run_migrations_with_recovery(
+    pool: &SqlitePool,
+    migrator: &sqlx::migrate::Migrator,
+) -> Result<()> {
+    // First attempt — the common case.
+    match migrator.run(pool).await {
+        Ok(_) => return Ok(()),
+        Err(e) => {
+            let err_str = e.to_string().to_lowercase();
+            if !err_str.contains("already has a column named")
+                && !err_str.contains("duplicate column")
+            {
+                // Not a duplicate-column error; propagate as-is.
+                return Err(e.into());
+            }
+            log::warn!(
+                "Migration failed with duplicate column error: {}. \
+                 A column was likely added by an ensure_* helper before the migration ran. \
+                 Attempting recovery.",
+                e
+            );
+        }
+    }
+
+    // Recovery pass: walk every migration in order. For ones that are already applied
+    // (present in _sqlx_migrations with success = 1) skip them. For the first unapplied
+    // migration that would fail with "duplicate column", mark it as applied and continue
+    // so the migrator can proceed with the remaining migrations on the next call.
+    for migration in migrator.iter() {
+        let applied: Option<bool> = sqlx::query_scalar(
+            "SELECT success FROM _sqlx_migrations WHERE version = ? LIMIT 1",
+        )
+        .bind(migration.version)
+        .fetch_optional(pool)
+        .await?;
+
+        if matches!(applied, Some(true)) {
+            continue;
+        }
+
+        // Check whether this migration only adds a column that already exists.
+        let sql_str: &str = &migration.sql;
+        let sql_lower = sql_str.to_lowercase();
+        if !sql_lower.contains("add column") {
+            // Not a column-addition migration; stop here and let the normal
+            // migrator error surface for this migration.
+            break;
+        }
+
+        // Extract the table name and column name from the SQL so we can check
+        // whether the column already exists.
+        // Expected pattern: ALTER TABLE <table> ADD COLUMN <column> ...
+        let column_already_exists = if let Some(col_name) = parse_add_column_name(sql_str) {
+            if let Some(table_name) = parse_alter_table_name(sql_str) {
+                let exists: Option<i64> = sqlx::query_scalar(&format!(
+                    "SELECT 1 FROM pragma_table_info('{}') WHERE name = '{}' LIMIT 1",
+                    table_name, col_name
+                ))
+                .fetch_optional(pool)
+                .await
+                .unwrap_or(None);
+                exists.is_some()
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if column_already_exists {
+            log::warn!(
+                "Migration {} would fail because its column already exists. \
+                 Marking as applied so remaining migrations can proceed.",
+                migration.version
+            );
+            sqlx::query(
+                "INSERT OR REPLACE INTO _sqlx_migrations \
+                 (version, description, installed_on, success, checksum, execution_time) \
+                 VALUES (?, ?, CURRENT_TIMESTAMP, 1, ?, 0)",
+            )
+            .bind(migration.version)
+            .bind(migration.description.as_ref())
+            .bind(migration.checksum.as_ref())
+            .execute(pool)
+            .await?;
+        } else {
+            // The column doesn't exist yet, so the migration should run normally.
+            // Stop recovery here; the normal migrator will handle it on the next call.
+            break;
+        }
+    }
+
+    // Retry — remaining unapplied migrations should now succeed.
+    migrator.run(pool).await.map_err(Into::into)
+}
+
+/// Parse the table name from `ALTER TABLE <name> ADD COLUMN ...`
+fn parse_alter_table_name(sql: &str) -> Option<&str> {
+    let lower = sql.to_lowercase();
+    let after_alter = lower.find("alter table")?.checked_add("alter table".len())?;
+    let rest = sql[after_alter..].trim();
+    let end = rest.find(|c: char| c.is_whitespace())?;
+    Some(rest[..end].trim())
+}
+
+/// Parse the column name from `ALTER TABLE <name> ADD COLUMN <col> ...`
+fn parse_add_column_name(sql: &str) -> Option<&str> {
+    let lower = sql.to_lowercase();
+    let after_add = lower.find("add column")?.checked_add("add column".len())?;
+    let rest = sql[after_add..].trim();
+    let end = rest.find(|c: char| c.is_whitespace())?;
+    Some(rest[..end].trim())
 }

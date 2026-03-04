@@ -617,9 +617,14 @@ export function ModelSettingsModal({
   const handleSave = async () => {
     // For custom-openai provider, save the custom config first
     if (modelConfig.provider === 'custom-openai') {
+      const endpoint = customOpenAIEndpoint.trim();
+      if (!endpoint.startsWith('http://') && !endpoint.startsWith('https://')) {
+        toast.error('Endpoint must start with http:// or https:// (e.g. http://localhost:8080/v1)');
+        return;
+      }
       try {
         await invoke('api_save_custom_openai_config', {
-          endpoint: customOpenAIEndpoint.trim(),
+          endpoint: endpoint,
           apiKey: customOpenAIApiKey.trim() || null,
           model: customOpenAIModel.trim(),
           maxTokens: customMaxTokens ? parseInt(customMaxTokens, 10) : null,
@@ -629,7 +634,8 @@ export function ModelSettingsModal({
         console.log('Custom OpenAI config saved successfully');
       } catch (err) {
         console.error('Failed to save custom OpenAI config:', err);
-        toast.error('Failed to save custom OpenAI configuration');
+        const message = typeof err === 'string' ? err : 'Failed to save custom OpenAI configuration';
+        toast.error(message);
         return;
       }
     }
