@@ -36,6 +36,8 @@ pub struct TranscriptUpdate {
     pub audio_start_time: f64, // Seconds from recording start (e.g., 125.3)
     pub audio_end_time: f64,   // Seconds from recording start (e.g., 128.6)
     pub duration: f64,          // Segment duration in seconds (e.g., 3.3)
+    // Speaker identification: 'mic' for microphone, 'system' for system audio
+    pub speaker: Option<String>,
 }
 
 // NOTE: get_transcript_history and get_recording_meeting_name functions
@@ -205,6 +207,11 @@ pub fn start_transcription_task<R: Runtime>(
 
                                         // Emit transcript update with NEW recording-relative timestamps
 
+                                        let speaker = match chunk.device_type {
+                                            crate::audio::recording_state::DeviceType::Microphone => Some("mic".to_string()),
+                                            crate::audio::recording_state::DeviceType::System => Some("system".to_string()),
+                                        };
+
                                         let update = TranscriptUpdate {
                                             text: transcript,
                                             timestamp: format_current_timestamp(), // Wall-clock for reference
@@ -217,6 +224,7 @@ pub fn start_transcription_task<R: Runtime>(
                                             audio_start_time,
                                             audio_end_time,
                                             duration: chunk_duration,
+                                            speaker,
                                         };
 
                                         if let Err(e) = app_clone.emit("transcript-update", &update)

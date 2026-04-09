@@ -71,6 +71,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
     confidence,
     isStreaming,
     showConfidence,
+    speaker,
 }: {
     id: string;
     timestamp: number;
@@ -78,6 +79,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
     confidence?: number;
     isStreaming: boolean;
     showConfidence: boolean;
+    speaker?: string;
 }) {
     const displayText = cleanStopWords(text) || (text.trim() === '' ? '[Silence]' : text);
 
@@ -97,6 +99,11 @@ const TranscriptSegment = memo(function TranscriptSegment({
                     </TooltipContent>
                 </Tooltip>
                 <div className="flex-1">
+                    {speaker && (
+                        <span className="inline-block text-xs font-medium px-1.5 py-0.5 rounded mb-1 mr-1 bg-blue-100 text-blue-700">
+                            {speaker === 'mic' ? 'Mic' : speaker === 'system' ? 'System' : speaker}
+                        </span>
+                    )}
                     {isStreaming ? (
                         <div className="bg-gray-100 border border-gray-200 rounded-lg px-3 py-2">
                             <p className="text-base text-gray-800 leading-relaxed">{displayText}</p>
@@ -296,6 +303,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         confidence={segment.confidence}
                                         isStreaming={isStreaming}
                                         showConfidence={showConfidence}
+                                        speaker={segment.speaker}
                                     />
                                 </div>
                             );
@@ -352,6 +360,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         confidence={segment.confidence}
                                         isStreaming={isStreaming}
                                         showConfidence={showConfidence}
+                                        speaker={segment.speaker}
                                     />
                                 </motion.div>
                             );
