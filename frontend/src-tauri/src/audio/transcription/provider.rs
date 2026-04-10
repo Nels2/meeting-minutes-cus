@@ -39,10 +39,21 @@ impl std::error::Error for TranscriptionError {}
 
 /// Unified transcription result across all providers
 #[derive(Debug, Clone)]
+pub struct TranscriptSegmentResult {
+    pub text: String,
+    pub start_time: Option<f64>,
+    pub end_time: Option<f64>,
+    pub speaker: Option<String>,
+}
+
+/// Unified transcription result across all providers
+#[derive(Debug, Clone)]
 pub struct TranscriptResult {
     pub text: String,
     pub confidence: Option<f32>, // None if provider doesn't support confidence scores
     pub is_partial: bool,
+    pub speaker: Option<String>,
+    pub segments: Vec<TranscriptSegmentResult>,
 }
 
 /// Trait for transcription providers (Whisper, Parakeet, future providers)

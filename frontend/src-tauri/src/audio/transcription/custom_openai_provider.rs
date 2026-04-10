@@ -2,7 +2,9 @@
 //
 // Custom OpenAI-compatible transcription provider (remote HTTP API).
 
-use super::provider::{TranscriptionError, TranscriptionProvider, TranscriptResult};
+use super::provider::{
+    TranscriptResult, TranscriptSegmentResult, TranscriptionError, TranscriptionProvider,
+};
 use async_trait::async_trait;
 use base64::{engine::general_purpose, Engine as _};
 use futures_util::StreamExt;
@@ -303,6 +305,91 @@ impl CustomOpenAIProvider {
         None
     }
 
+    fn extract_string_field(value: &Value, keys: &[&str]) -> Option<String> {
+        for key in keys {
+            if let Some(raw) = value.get(*key) {
+                if let Some(text) = raw.as_str() {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_string());
+                    }
+                } else if let Some(number) = raw.as_i64() {
+                    return Some(number.to_string());
+                } else if let Some(number) = raw.as_u64() {
+                    return Some(number.to_string());
+                }
+            }
+        }
+        None
+    }
+
+    fn extract_f64_field(value: &Value, keys: &[&str]) -> Option<f64> {
+        for key in keys {
+            if let Some(raw) = value.get(*key) {
+                if let Some(number) = raw.as_f64() {
+                    return Some(number);
+                }
+                if let Some(text) = raw.as_str() {
+                    if let Ok(number) = text.trim().parse::<f64>() {
+                        return Some(number);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn extract_segment_results(value: &Value) -> Vec<TranscriptSegmentResult> {
+        let segments = if let Some(array) = value.get("segments").and_then(|v| v.as_array()) {
+            Some(array)
+        } else {
+            value.as_array()
+        };
+
+        segments
+            .into_iter()
+            .flatten()
+            .filter_map(|segment| {
+                let text = Self::extract_string_field(segment, &["text", "transcript", "content"])?;
+                Some(TranscriptSegmentResult {
+                    text,
+                    start_time: Self::extract_f64_field(
+                        segment,
+                        &["start", "start_time", "startTime", "from"],
+                    ),
+                    end_time: Self::extract_f64_field(
+                        segment,
+                        &["end", "end_time", "endTime", "to"],
+                    ),
+                    speaker: Self::extract_string_field(
+                        segment,
+                        &[
+                            "speaker",
+                            "speaker_id",
+                            "speakerId",
+                            "speaker_label",
+                            "speakerLabel",
+                        ],
+                    ),
+                })
+            })
+            .collect()
+    }
+
+    fn collapse_speaker(segments: &[TranscriptSegmentResult]) -> Option<String> {
+        let mut speakers = segments
+            .iter()
+            .filter_map(|segment| segment.speaker.as_deref())
+            .filter(|speaker| !speaker.trim().is_empty());
+
+        let first = speakers.next()?.to_string();
+        if speakers.all(|speaker| speaker == first.as_str()) {
+            Some(first)
+        } else {
+            None
+        }
+    }
+
     fn extract_stream_delta_text(value: &Value) -> Option<String> {
         let choice = value.get("choices")?.get(0)?;
 
@@ -424,9 +511,7 @@ impl CustomOpenAIProvider {
         }
     }
 
-    async fn read_chat_response(
-        response: reqwest::Response,
-    ) -> Result<String, TranscriptionError> {
+    async fn read_chat_response(response: reqwest::Response) -> Result<String, TranscriptionError> {
         let content_type = response
             .headers()
             .get(CONTENT_TYPE)
@@ -555,18 +640,34 @@ impl CustomOpenAIProvider {
                     )));
                 }
 
-                let value: Value = serde_json::from_str(&retry_body)
-                    .map_err(|e| TranscriptionError::EngineFailed(format!("Invalid JSON: {}", e)))?;
+                let value: Value = serde_json::from_str(&retry_body).map_err(|e| {
+                    TranscriptionError::EngineFailed(format!("Invalid JSON: {}", e))
+                })?;
+                let segments = Self::extract_segment_results(&value);
                 let text = value
                     .get("text")
                     .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
+                    .map(|v| v.to_string())
+                    .filter(|v| !v.trim().is_empty())
+                    .or_else(|| Self::extract_json_transcript(&value))
+                    .unwrap_or_default();
 
                 return Ok(TranscriptResult {
                     text,
                     confidence: None,
                     is_partial: false,
+                    speaker: Self::extract_string_field(
+                        &value,
+                        &[
+                            "speaker",
+                            "speaker_id",
+                            "speakerId",
+                            "speaker_label",
+                            "speakerLabel",
+                        ],
+                    )
+                    .or_else(|| Self::collapse_speaker(&segments)),
+                    segments,
                 });
             }
 
@@ -578,16 +679,31 @@ impl CustomOpenAIProvider {
 
         let value: Value = serde_json::from_str(&body)
             .map_err(|e| TranscriptionError::EngineFailed(format!("Invalid JSON: {}", e)))?;
+        let segments = Self::extract_segment_results(&value);
         let text = value
             .get("text")
             .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
+            .map(|v| v.to_string())
+            .filter(|v| !v.trim().is_empty())
+            .or_else(|| Self::extract_json_transcript(&value))
+            .unwrap_or_default();
 
         Ok(TranscriptResult {
             text,
             confidence: None,
             is_partial: false,
+            speaker: Self::extract_string_field(
+                &value,
+                &[
+                    "speaker",
+                    "speaker_id",
+                    "speakerId",
+                    "speaker_label",
+                    "speakerLabel",
+                ],
+            )
+            .or_else(|| Self::collapse_speaker(&segments)),
+            segments,
         })
     }
 
@@ -606,21 +722,21 @@ impl CustomOpenAIProvider {
                 serde_json::json!([
                     { "type": "audio_url", "audio_url": { "url": data_url } },
                     { "type": "text", "text": prompt }
-                ])
+                ]),
             ),
             (
                 "input_audio",
                 serde_json::json!([
                     { "type": "text", "text": prompt },
                     { "type": "input_audio", "input_audio": { "data": audio_b64.clone(), "format": "wav" } }
-                ])
+                ]),
             ),
             (
                 "audio",
                 serde_json::json!([
                     { "type": "text", "text": prompt },
                     { "type": "audio", "audio": { "data": audio_b64, "format": "wav" } }
-                ])
+                ]),
             ),
         ];
 
@@ -706,8 +822,7 @@ impl CustomOpenAIProvider {
         if total_chunks > 1 {
             warn!(
                 "Chat transcription chunking enabled: {} chunks (~{:.1}s each)",
-                total_chunks,
-                CHAT_CHUNK_SECONDS
+                total_chunks, CHAT_CHUNK_SECONDS
             );
         }
 
@@ -728,6 +843,8 @@ impl CustomOpenAIProvider {
             text: merged,
             confidence: None,
             is_partial: false,
+            speaker: None,
+            segments: Vec::new(),
         })
     }
 }
