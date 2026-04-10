@@ -91,14 +91,14 @@ export function useTranscriptionModels(transcriptModelConfig: TranscriptModelCon
         (configuredProvider === 'parakeet' && m.provider === 'parakeet' && m.name === configuredModel)
     );
 
-    // Only set default model if user hasn't manually selected one
+    // Only set a default override if the saved local-provider model exists.
+    // Otherwise leave the selection empty so callers can use the saved
+    // transcription settings as-is (for example custom-openai).
     if (!userSelectedRef.current) {
       if (configuredMatch) {
-        // Use the configured model if available
         setSelectedModelKey(`${configuredMatch.provider}:${configuredMatch.name}`);
-      } else if (allModels.length > 0) {
-        // Fall back to first available model
-        setSelectedModelKey(`${allModels[0].provider}:${allModels[0].name}`);
+      } else {
+        setSelectedModelKey('');
       }
     }
 

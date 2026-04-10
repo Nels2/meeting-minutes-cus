@@ -144,6 +144,14 @@ pub fn start_transcription_task<R: Runtime>(
 
                             let chunk_timestamp = chunk.timestamp;
                             let chunk_duration = chunk.data.len() as f64 / chunk.sample_rate as f64;
+                            let speaker = match &chunk.device_type {
+                                crate::audio::recording_state::DeviceType::Microphone => {
+                                    Some("mic".to_string())
+                                }
+                                crate::audio::recording_state::DeviceType::System => {
+                                    Some("system".to_string())
+                                }
+                            };
 
                             // Transcribe with provider-agnostic approach
                             match transcribe_chunk_with_provider(
@@ -206,11 +214,6 @@ pub fn start_transcription_task<R: Runtime>(
                                         // This decouples the transcription worker from direct RECORDING_MANAGER access
 
                                         // Emit transcript update with NEW recording-relative timestamps
-
-                                        let speaker = match chunk.device_type {
-                                            crate::audio::recording_state::DeviceType::Microphone => Some("mic".to_string()),
-                                            crate::audio::recording_state::DeviceType::System => Some("system".to_string()),
-                                        };
 
                                         let update = TranscriptUpdate {
                                             text: transcript,

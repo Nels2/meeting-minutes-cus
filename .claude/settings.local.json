@@ -3,7 +3,8 @@
     "allow": [
       "Bash(xargs grep -l \"api_save.*custom\\\\|custom.*openai\")",
       "Bash(grep -n \"struct CustomOpenAIConfig\\\\|pub struct CustomOpenAIConfig\" /c/Projects/meeting-minutes-cus/frontend/src-tauri/src/summary/*.rs)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ]
   }
 }
