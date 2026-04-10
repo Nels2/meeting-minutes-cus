@@ -193,6 +193,9 @@ pub struct TranscriptSegment {
     pub audio_end_time: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<f64>,
+    // Speaker identification: 'mic' for microphone, 'system' for system audio
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
