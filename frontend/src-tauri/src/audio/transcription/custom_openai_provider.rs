@@ -558,7 +558,9 @@ impl CustomOpenAIProvider {
 
         let mut form = Form::new()
             .part("file", part)
-            .text("model", self.model.clone());
+            .text("model", self.model.clone())
+            // Ask for structured output so compatible servers include segment metadata.
+            .text("response_format", "verbose_json");
 
         if let Some(lang) = language.as_ref() {
             if !lang.trim().is_empty() {
@@ -605,7 +607,8 @@ impl CustomOpenAIProvider {
                     .map_err(|e| TranscriptionError::EngineFailed(e.to_string()))?;
                 let mut retry_form = Form::new()
                     .part("file", retry_part)
-                    .text("model", self.model.clone());
+                    .text("model", self.model.clone())
+                    .text("response_format", "verbose_json");
                 if let Some(lang) = language.as_ref() {
                     if !lang.trim().is_empty() {
                         retry_form = retry_form.text("language", lang.clone());

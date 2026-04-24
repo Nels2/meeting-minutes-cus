@@ -3,7 +3,7 @@
 use crate::api::TranscriptSegment;
 use crate::audio::decoder::{decode_audio_file, decode_audio_file_with_progress};
 use crate::audio::transcription::{
-    get_or_init_transcription_engine, CustomOpenAIProvider, TranscriptionEngine,
+    get_or_init_transcription_engine, CustomOpenAIProvider, TranscriptResult, TranscriptionEngine,
 };
 use crate::audio::vad::get_speech_chunks_with_progress;
 use crate::config::{DEFAULT_PARAKEET_MODEL, DEFAULT_WHISPER_MODEL};
@@ -21,7 +21,9 @@ use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 
 use super::audio_processing::create_meeting_folder;
-use super::common::{create_transcript_segments, split_segment_at_silence, write_transcripts_json};
+use super::common::{
+    create_transcript_segments, split_segment_at_silence, write_transcripts_json, TimedTranscript,
+};
 use super::constants::AUDIO_EXTENSIONS;
 use super::recording_preferences::get_default_recordings_folder;
 
@@ -542,7 +544,7 @@ async fn run_import<R: Runtime>(
     );
 
     // Process each speech segment
-    let mut all_transcripts: Vec<(String, f64, f64)> = Vec::new();
+    let mut all_transcripts: Vec<TimedTranscript> = Vec::new();
     let mut total_confidence = 0.0f32;
 
     for (i, segment) in processable_segments.iter().enumerate() {
@@ -575,7 +577,7 @@ async fn run_import<R: Runtime>(
             continue;
         }
 
-        let (text, conf) = transcribe_import_segment(
+        let result = transcribe_import_segment(
             transcription_engine.as_ref().unwrap(),
             segment.samples.clone(),
             language.clone(),
@@ -583,33 +585,27 @@ async fn run_import<R: Runtime>(
         )
         .await?;
 
-        let trimmed = text.trim();
-        if !trimmed.is_empty() {
-            debug!(
-                "Segment {}/{}: {:.1}s, conf={:.2}, text='{}'",
-                i + 1,
-                processable_count,
-                segment_duration_sec,
-                conf,
-                if trimmed.len() > 80 {
-                    let mut end = 80;
-                    while !trimmed.is_char_boundary(end) {
-                        end -= 1;
-                    }
-                    &trimmed[..end]
-                } else {
-                    trimmed
-                }
-            );
-            all_transcripts.push((text, segment.start_timestamp_ms, segment.end_timestamp_ms));
-            total_confidence += conf;
-        } else {
+        let confidence = result.confidence.unwrap_or(0.9f32);
+        let added_count = append_import_transcripts(
+            &mut all_transcripts,
+            &result,
+            segment.start_timestamp_ms,
+            segment.end_timestamp_ms,
+            i,
+            processable_count,
+            segment_duration_sec,
+            confidence,
+        );
+
+        if added_count == 0 {
             debug!(
                 "Segment {}/{}: {:.1}s — empty transcription",
                 i + 1,
                 processable_count,
                 segment_duration_sec
             );
+        } else {
+            total_confidence += confidence * added_count as f32;
         }
     }
 
@@ -782,15 +778,115 @@ async fn get_import_transcription_engine<R: Runtime>(
     }
 }
 
+fn append_import_transcripts(
+    all_transcripts: &mut Vec<TimedTranscript>,
+    result: &TranscriptResult,
+    segment_start_ms: f64,
+    segment_end_ms: f64,
+    segment_index: usize,
+    total_segments: usize,
+    segment_duration_sec: f64,
+    confidence: f32,
+) -> usize {
+    let mut added_count = 0usize;
+    let segment_duration_ms = (segment_end_ms - segment_start_ms).max(0.0);
+
+    if !result.segments.is_empty() {
+        for (sub_index, transcript_segment) in result.segments.iter().enumerate() {
+            let trimmed = transcript_segment.text.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let speaker = transcript_segment
+                .speaker
+                .clone()
+                .or_else(|| result.speaker.clone());
+
+            let start_offset_ms = (transcript_segment.start_time.unwrap_or(0.0) * 1000.0)
+                .clamp(0.0, segment_duration_ms);
+            let next_start_ms = result
+                .segments
+                .get(sub_index + 1)
+                .and_then(|next| next.start_time)
+                .map(|value| (value * 1000.0).clamp(start_offset_ms, segment_duration_ms));
+            let end_offset_ms = transcript_segment
+                .end_time
+                .map(|value| (value * 1000.0).clamp(start_offset_ms, segment_duration_ms))
+                .or(next_start_ms)
+                .unwrap_or(segment_duration_ms);
+            let absolute_end_ms = if end_offset_ms > start_offset_ms {
+                segment_start_ms + end_offset_ms
+            } else {
+                segment_end_ms
+            };
+
+            debug!(
+                "Segment {}/{}: {:.1}s, conf={:.2}, speaker={:?}, text='{}'",
+                segment_index + 1,
+                total_segments,
+                segment_duration_sec,
+                confidence,
+                speaker.as_deref(),
+                preview_text(trimmed)
+            );
+
+            all_transcripts.push(TimedTranscript {
+                text: trimmed.to_string(),
+                start_ms: segment_start_ms + start_offset_ms,
+                end_ms: absolute_end_ms,
+                speaker,
+            });
+            added_count += 1;
+        }
+    }
+
+    if added_count == 0 {
+        let trimmed = result.text.trim();
+        if !trimmed.is_empty() {
+            debug!(
+                "Segment {}/{}: {:.1}s, conf={:.2}, speaker={:?}, text='{}'",
+                segment_index + 1,
+                total_segments,
+                segment_duration_sec,
+                confidence,
+                result.speaker.as_deref(),
+                preview_text(trimmed)
+            );
+
+            all_transcripts.push(TimedTranscript {
+                text: trimmed.to_string(),
+                start_ms: segment_start_ms,
+                end_ms: segment_end_ms,
+                speaker: result.speaker.clone(),
+            });
+            added_count = 1;
+        }
+    }
+
+    added_count
+}
+
+fn preview_text(text: &str) -> &str {
+    if text.len() > 80 {
+        let mut end = 80;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        &text[..end]
+    } else {
+        text
+    }
+}
+
 async fn transcribe_import_segment(
     engine: &TranscriptionEngine,
     samples: Vec<f32>,
     language: Option<String>,
     segment_index: usize,
-) -> Result<(String, f32)> {
+) -> Result<TranscriptResult> {
     match engine {
         TranscriptionEngine::Whisper(whisper_engine) => {
-            let (text, confidence, _) = whisper_engine
+            let (text, confidence, is_partial) = whisper_engine
                 .transcribe_audio_with_confidence(samples, language)
                 .await
                 .map_err(|e| {
@@ -800,7 +896,13 @@ async fn transcribe_import_segment(
                         e
                     )
                 })?;
-            Ok((text, confidence))
+            Ok(TranscriptResult {
+                text,
+                confidence: Some(confidence),
+                is_partial,
+                speaker: None,
+                segments: Vec::new(),
+            })
         }
         TranscriptionEngine::Parakeet(parakeet_engine) => {
             let text = parakeet_engine
@@ -813,18 +915,23 @@ async fn transcribe_import_segment(
                         e
                     )
                 })?;
-            Ok((text, 0.9f32))
+            Ok(TranscriptResult {
+                text,
+                confidence: None,
+                is_partial: false,
+                speaker: None,
+                segments: Vec::new(),
+            })
         }
         TranscriptionEngine::Provider(provider) => {
-            let result = provider.transcribe(samples, language).await.map_err(|e| {
+            provider.transcribe(samples, language).await.map_err(|e| {
                 anyhow!(
                     "{} transcription failed on segment {}: {}",
                     provider.provider_name(),
                     segment_index,
                     e
                 )
-            })?;
-            Ok((result.text, result.confidence.unwrap_or(0.9f32)))
+            })
         }
     }
 }
@@ -877,8 +984,8 @@ async fn create_meeting_with_transcripts(
     // Insert transcripts
     for segment in segments {
         sqlx::query(
-            "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, speaker)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&segment.id)
         .bind(&meeting_id)
@@ -887,6 +994,7 @@ async fn create_meeting_with_transcripts(
         .bind(segment.audio_start_time)
         .bind(segment.audio_end_time)
         .bind(segment.duration)
+        .bind(&segment.speaker)
         .execute(&mut *tx)
         .await
         .map_err(|e| anyhow!("Failed to insert transcript: {}", e))?;
@@ -1181,20 +1289,26 @@ mod tests {
 
     #[test]
     fn test_create_transcript_segments_empty() {
-        let transcripts: Vec<(String, f64, f64)> = vec![];
+        let transcripts: Vec<TimedTranscript> = vec![];
         let segments = create_transcript_segments(&transcripts);
         assert!(segments.is_empty());
     }
 
     #[test]
     fn test_create_transcript_segments_single() {
-        let transcripts = vec![("Hello world".to_string(), 0.0, 1500.0)];
+        let transcripts = vec![TimedTranscript {
+            text: "Hello world".to_string(),
+            start_ms: 0.0,
+            end_ms: 1500.0,
+            speaker: Some("SPEAKER_00".to_string()),
+        }];
         let segments = create_transcript_segments(&transcripts);
 
         assert_eq!(segments.len(), 1);
         assert_eq!(segments[0].text, "Hello world");
         assert_eq!(segments[0].audio_start_time, Some(0.0));
         assert_eq!(segments[0].audio_end_time, Some(1.5));
+        assert_eq!(segments[0].speaker.as_deref(), Some("SPEAKER_00"));
     }
 
     #[test]

@@ -108,6 +108,8 @@ export function useTranscriptionModels(transcriptModelConfig: TranscriptModelCon
   // Reset user selection tracking (call when dialog opens fresh)
   const resetSelection = useCallback(() => {
     userSelectedRef.current = false;
+    setSelectedModelKey('');
+    setAvailableModels([]);
   }, []);
 
   return {

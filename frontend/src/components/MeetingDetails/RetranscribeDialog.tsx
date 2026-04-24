@@ -92,7 +92,20 @@ export function RetranscribeDialog({
     const name = selectedModelKey.slice(colonIndex + 1);
     return availableModels.find(m => m.provider === provider && m.name === name);
   }, [selectedModelKey, availableModels]);
-  const isParakeetModel = selectedModelDetails?.provider === 'parakeet';
+  const usesLocalModelCatalog = transcriptModelConfig.provider === 'localWhisper'
+    || transcriptModelConfig.provider === 'parakeet';
+  const effectiveProvider = selectedModelDetails?.provider === 'whisper'
+    ? 'localWhisper'
+    : (selectedModelDetails?.provider || transcriptModelConfig.provider);
+  const effectiveModelName = selectedModelDetails?.name || transcriptModelConfig.model || null;
+  const isParakeetModel = effectiveProvider === 'parakeet';
+  const configuredProviderLabel = transcriptModelConfig.provider === 'localWhisper'
+    ? 'Local Whisper'
+    : transcriptModelConfig.provider === 'custom-openai'
+      ? 'Custom OpenAI'
+      : transcriptModelConfig.provider === 'parakeet'
+        ? 'Parakeet'
+        : transcriptModelConfig.provider;
 
   useEffect(() => {
     if (isParakeetModel && selectedLang !== 'auto') {
@@ -113,10 +126,11 @@ export function RetranscribeDialog({
       setError(null);
       setSelectedLang(selectedLanguage || 'auto');
 
-      // Fetch available models using centralized hook
-      fetchModels();
+      if (usesLocalModelCatalog) {
+        fetchModels();
+      }
     }
-  }, [open, selectedLanguage, transcriptModelConfig, fetchModels]);
+  }, [open, selectedLanguage, usesLocalModelCatalog, fetchModels, resetSelection]);
 
   // Listen for retranscription events
   useEffect(() => {
@@ -210,16 +224,16 @@ export function RetranscribeDialog({
       const languageToSend = isParakeetModel ? null : selectedLang === 'auto' ? null : selectedLang;
       await Analytics.track('enhance_transcript_started', {
         language: isParakeetModel ? 'auto' : (selectedLang === 'auto' ? 'auto' : selectedLang),
-        model_provider: selectedModelDetails?.provider || '',
-        model_name: selectedModelDetails?.name || ''
+        model_provider: effectiveProvider || '',
+        model_name: effectiveModelName || ''
       });
 
       await invoke('start_retranscription_command', {
         meetingId,
         meetingFolderPath,
         language: languageToSend,
-        model: selectedModelDetails?.name || null,
-        provider: selectedModelDetails?.provider || null,
+        model: effectiveModelName,
+        provider: effectiveProvider || null,
       });
     } catch (err: any) {
       setIsProcessing(false);
@@ -295,11 +309,21 @@ export function RetranscribeDialog({
               ? progress?.message || 'Processing audio...'
               : error
                 ? 'An error occurred during retranscription'
-                : 'Re-process the audio with different language settings'}
+                : 'Enhance uses your saved Transcription Settings by default.'}
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4 py-4">
+          {!isProcessing && !error && (
+            <div className="rounded-lg border bg-slate-50 px-3 py-2 text-sm">
+              <p className="font-medium text-slate-900">Current transcription settings</p>
+              <p className="text-slate-600">
+                {configuredProviderLabel}
+                {effectiveModelName ? ` / ${effectiveModelName}` : ''}
+              </p>
+            </div>
+          )}
+
           {!isProcessing && !error && (
             !isParakeetModel ? (
               <div className="space-y-3">
@@ -336,7 +360,7 @@ export function RetranscribeDialog({
             )
           )}
 
-          {!isProcessing && !error && availableModels.length > 0 && (
+          {!isProcessing && !error && usesLocalModelCatalog && availableModels.length > 0 && (
             <div className="space-y-3">
               <div className="flex items-center gap-2">
                 <Cpu className="h-4 w-4 text-muted-foreground" />
@@ -355,7 +379,7 @@ export function RetranscribeDialog({
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground">
-                Choose a transcription model
+                Override the saved local model for this enhancement run
               </p>
             </div>
           )}

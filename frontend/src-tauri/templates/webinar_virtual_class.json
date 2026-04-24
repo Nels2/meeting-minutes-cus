@@ -1,0 +1,44 @@
+{
+  "name": "Webinar / Virtual Class",
+  "description": "Summarize online teaching sessions, webinars, and virtual classes with key concepts, participant questions, and follow-up resources.",
+  "sections": [
+    {
+      "title": "Session Overview",
+      "instruction": "Provide a concise overview of the session topic, intended audience, and primary outcome or purpose of the webinar or class.",
+      "format": "paragraph"
+    },
+    {
+      "title": "Presenters & Audience",
+      "instruction": "List the presenters, moderators, guest speakers, and any clearly identified audience groups or participants mentioned during the session.",
+      "format": "list"
+    },
+    {
+      "title": "Agenda & Learning Objectives",
+      "instruction": "Summarize the planned agenda, learning goals, or key outcomes the presenter said attendees should understand by the end.",
+      "format": "list"
+    },
+    {
+      "title": "Key Concepts & Demonstrations",
+      "instruction": "Capture the main concepts taught, examples shown, demonstrations performed, and any frameworks, workflows, or methods explained.",
+      "format": "paragraph"
+    },
+    {
+      "title": "Participant Questions & Answers",
+      "instruction": "List the most important audience questions and the presenter responses. Include unresolved questions if they were deferred.",
+      "format": "list",
+      "item_format": "| **Question** | **Answer / Outcome** | **Status** |\n| --- | --- | --- |"
+    },
+    {
+      "title": "Resources Shared",
+      "instruction": "List any links, documents, tools, homework, readings, downloads, or references mentioned as follow-up resources.",
+      "format": "list",
+      "item_format": "| **Resource** | **Purpose** | **Owner / Source** |\n| --- | --- | --- |"
+    },
+    {
+      "title": "Assignments & Next Steps",
+      "instruction": "List any assignments, practice tasks, deadlines, follow-up actions, or next session commitments mentioned. Include owners when they are clear.",
+      "format": "list",
+      "item_format": "| **Owner / Audience** | **Task / Assignment** | **Due / Timing** |\n| --- | --- | --- |"
+    }
+  ]
+}
