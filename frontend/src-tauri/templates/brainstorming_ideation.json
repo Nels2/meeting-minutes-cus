@@ -1,0 +1,49 @@
+{
+  "name": "Brainstorming / Ideation Session",
+  "description": "Capture creative sessions, idea generation workshops, and collaborative problem-solving meetings with structured ideas, themes, and prioritized outcomes.",
+  "sections": [
+    {
+      "title": "Session Overview",
+      "instruction": "Summarize the problem statement, opportunity, or topic that was the focus of the brainstorm, and the goal or desired outcome of the session.",
+      "format": "paragraph"
+    },
+    {
+      "title": "Participants",
+      "instruction": "List all participants and their roles or departments. Note any facilitators or subject matter experts present.",
+      "format": "list"
+    },
+    {
+      "title": "Context & Constraints",
+      "instruction": "Capture any background information, constraints, boundaries, or criteria that were established before ideation began (e.g., budget limits, timeline, must-haves, off-limits areas).",
+      "format": "list"
+    },
+    {
+      "title": "Ideas Generated",
+      "instruction": "List all ideas surfaced during the session without filtering or judgment. Group by theme or category if themes emerged naturally.",
+      "format": "list",
+      "item_format": "| **Idea** | **Category / Theme** | **Suggested By** |\n| --- | --- | --- |"
+    },
+    {
+      "title": "Top Ideas & Prioritization",
+      "instruction": "List the ideas that received the most interest, votes, or discussion. Note why each rose to the top and any early ranking or scoring.",
+      "format": "list",
+      "item_format": "| **Idea** | **Why It Stood Out** | **Priority / Score** |\n| --- | --- | --- |"
+    },
+    {
+      "title": "Key Themes & Insights",
+      "instruction": "Summarize any recurring themes, surprising insights, shared pain points, or patterns that emerged across multiple ideas.",
+      "format": "paragraph"
+    },
+    {
+      "title": "Parking Lot",
+      "instruction": "List ideas or topics that came up but were out of scope, deferred, or need more exploration before they can be evaluated.",
+      "format": "list"
+    },
+    {
+      "title": "Next Steps",
+      "instruction": "List actions to move promising ideas forward — research tasks, prototype requests, follow-up meetings, or owners assigned to explore specific ideas.",
+      "format": "list",
+      "item_format": "| **Owner** | **Next Step** | **Due / Timing** |\n| --- | --- | --- |"
+    }
+  ]
+}

@@ -1283,7 +1283,7 @@ export function ModelSettingsModal({
 
                         {/* Show progress for gemma3:1b download */}
                         {isDownloading('gemma3:1b') && getProgress('gemma3:1b') !== undefined && (
-                          <div className="bg-white rounded-md border p-3">
+                          <div className="bg-white dark:bg-gray-950 rounded-md border dark:border-gray-800 p-3">
                             <div className="flex items-center justify-between mb-2">
                               <span className="text-sm font-medium text-blue-600">Downloading gemma3:1b</span>
                               <span className="text-sm font-semibold text-blue-600">
@@ -1341,7 +1341,7 @@ export function ModelSettingsModal({
 
                           {/* Progress bar for downloading models */}
                           {modelIsDownloading && progress !== undefined && (
-                            <div className="mt-3 pt-3 border-t border-gray-200">
+                            <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-800">
                               <div className="flex items-center justify-between mb-2">
                                 <span className="text-sm font-medium text-blue-600">Downloading...</span>
                                 <span className="text-sm font-semibold text-blue-600">{Math.round(progress)}%</span>

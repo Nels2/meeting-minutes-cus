@@ -1,20 +1,20 @@
 use crate::database::repositories::{
-    meeting::MeetingsRepository,
-    summary::SummaryProcessesRepository, transcript_chunk::TranscriptChunksRepository,
+    meeting::MeetingsRepository, summary::SummaryProcessesRepository,
+    setting::SettingsRepository,
+    transcript_chunk::TranscriptChunksRepository,
 };
 use crate::state::AppState;
+use crate::summary::language_detection::{detect_summary_language, SummaryLanguageDetection};
+use crate::summary::llm_client::{generate_summary, LLMProvider};
 use crate::summary::metadata::{
     read_detected_summary_language_from_metadata, read_summary_language_from_metadata,
     write_detected_summary_language_to_metadata, write_summary_language_to_metadata,
-};
-use crate::summary::language_detection::{
-    detect_summary_language, SummaryLanguageDetection,
 };
 use crate::summary::service::SummaryService;
 use log::{error as log_error, info as log_info, warn as log_warn};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Manager, Runtime};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SummaryResponse {
@@ -67,6 +67,41 @@ impl MeetingSummaryLanguagePreference {
 enum MeetingFolderResolution {
     Folder(PathBuf),
     NoFolder,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MeetingChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MeetingChatResponse {
+    pub answer: String,
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+
+    let retained: String = value.chars().take(max_chars).collect();
+    format!(
+        "{}\n\n[Context truncated to {} characters for this request.]",
+        retained, max_chars
+    )
+}
+
+fn summary_value_to_markdown(value: Option<&serde_json::Value>) -> String {
+    let Some(value) = value else {
+        return String::new();
+    };
+
+    if let Some(markdown) = value.get("markdown").and_then(|v| v.as_str()) {
+        return markdown.to_string();
+    }
+
+    value.to_string()
 }
 
 /// Saves a meeting summary (Native SQLx implementation)
@@ -404,6 +439,141 @@ pub async fn api_process_transcript<R: Runtime>(
         message: "Summary generation started".to_string(),
         process_id: m_id,
     })
+}
+
+/// Answers ad-hoc questions about a stored meeting using the configured summary LLM provider.
+#[tauri::command]
+pub async fn api_chat_with_meeting<R: Runtime>(
+    app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+    question: String,
+    conversation_history: Option<Vec<MeetingChatMessage>>,
+    custom_context: Option<String>,
+) -> Result<MeetingChatResponse, String> {
+    let pool = state.db_manager.pool();
+
+    let meeting = MeetingsRepository::get_meeting_metadata(pool, &meeting_id)
+        .await
+        .map_err(|e| format!("Failed to load meeting metadata: {}", e))?
+        .ok_or_else(|| "Meeting not found".to_string())?;
+
+    let (transcripts, _) = MeetingsRepository::get_meeting_transcripts_paginated(
+        pool,
+        &meeting_id,
+        100_000,
+        0,
+    )
+    .await
+    .map_err(|e| format!("Failed to load meeting transcript: {}", e))?;
+
+    let summary_process = SummaryProcessesRepository::get_summary_data(pool, &meeting_id)
+        .await
+        .map_err(|e| format!("Failed to load meeting summary: {}", e))?;
+
+    let summary_json = summary_process
+        .and_then(|process| process.result)
+        .and_then(|result| serde_json::from_str::<serde_json::Value>(&result).ok());
+
+    let summary_markdown = summary_value_to_markdown(summary_json.as_ref());
+    let transcript_text = transcripts
+        .iter()
+        .map(|transcript| {
+            let speaker = transcript
+                .speaker
+                .as_ref()
+                .map(|s| format!("{}: ", s))
+                .unwrap_or_default();
+            format!("{}{} {}", speaker, transcript.timestamp, transcript.transcript)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let config = SettingsRepository::get_model_config(pool)
+        .await
+        .map_err(|e| format!("Failed to load model settings: {}", e))?
+        .ok_or_else(|| "Summary model settings are not configured".to_string())?;
+
+    let provider = LLMProvider::from_str(&config.provider)?;
+    let mut model_name = config.model.clone();
+    let mut api_key = if provider == LLMProvider::Ollama || provider == LLMProvider::BuiltInAI {
+        String::new()
+    } else {
+        SettingsRepository::get_api_key(pool, &config.provider)
+            .await
+            .map_err(|e| format!("Failed to load API key: {}", e))?
+            .unwrap_or_default()
+    };
+
+    let ollama_endpoint = if provider == LLMProvider::Ollama {
+        config.ollama_endpoint
+    } else {
+        None
+    };
+
+    let mut custom_openai_endpoint = None;
+    let mut custom_openai_max_tokens = None;
+    let mut custom_openai_temperature = None;
+    let mut custom_openai_top_p = None;
+
+    if provider == LLMProvider::CustomOpenAI {
+        let custom_config = SettingsRepository::get_custom_openai_config(pool)
+            .await
+            .map_err(|e| format!("Failed to load Custom OpenAI settings: {}", e))?
+            .ok_or_else(|| "Custom OpenAI provider selected but not configured".to_string())?;
+
+        model_name = custom_config.model;
+        api_key = custom_config.api_key.unwrap_or_default();
+        custom_openai_endpoint = Some(custom_config.endpoint);
+        custom_openai_max_tokens = custom_config.max_tokens.map(|tokens| tokens as u32);
+        custom_openai_temperature = custom_config.temperature;
+        custom_openai_top_p = custom_config.top_p;
+    }
+
+    let history = conversation_history
+        .unwrap_or_default()
+        .into_iter()
+        .rev()
+        .take(8)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(|message| format!("{}: {}", message.role, message.content))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let system_prompt = "You answer questions about one meeting. Use only the supplied meeting context. If the answer is not supported by the transcript, summary, or context, say that the meeting data does not contain that information.";
+    let user_prompt = format!(
+        "Meeting title: {}\nCreated: {}\n\nAdditional context:\n{}\n\nSummary:\n{}\n\nTranscript:\n{}\n\nRecent chat:\n{}\n\nQuestion:\n{}",
+        meeting.title,
+        meeting.created_at.0.to_rfc3339(),
+        custom_context.unwrap_or_default(),
+        truncate_chars(&summary_markdown, 30_000),
+        truncate_chars(&transcript_text, 90_000),
+        truncate_chars(&history, 12_000),
+        question
+    );
+
+    let app_data_dir = app.path().app_data_dir().ok();
+    let client = reqwest::Client::new();
+    let answer = generate_summary(
+        &client,
+        &provider,
+        &model_name,
+        &api_key,
+        system_prompt,
+        &user_prompt,
+        ollama_endpoint.as_deref(),
+        custom_openai_endpoint.as_deref(),
+        custom_openai_max_tokens,
+        custom_openai_temperature,
+        custom_openai_top_p,
+        app_data_dir.as_ref(),
+        None,
+    )
+    .await?;
+
+    Ok(MeetingChatResponse { answer })
 }
 
 /// Cancels an ongoing summary generation process

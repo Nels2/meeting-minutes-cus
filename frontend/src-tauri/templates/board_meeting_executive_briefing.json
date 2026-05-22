@@ -1,0 +1,49 @@
+{
+  "name": "Board Meeting / Executive Briefing",
+  "description": "Capture key decisions, presentations, and governance items from board meetings, executive briefings, and leadership sessions.",
+  "sections": [
+    {
+      "title": "Meeting Overview",
+      "instruction": "Summarize the meeting type (board meeting, executive briefing, committee session, etc.), the organization, and the primary purpose or context of the session.",
+      "format": "paragraph"
+    },
+    {
+      "title": "Attendees & Quorum",
+      "instruction": "List board members, executives, guests, and advisors present. Note if quorum was established or any notable absences.",
+      "format": "list"
+    },
+    {
+      "title": "Agenda Items",
+      "instruction": "List the agenda items covered in order, with a brief one-line description of each.",
+      "format": "list"
+    },
+    {
+      "title": "Reports & Presentations",
+      "instruction": "Summarize each report or presentation given (e.g., CEO report, financial report, committee updates). Include key metrics, findings, or highlights shared.",
+      "format": "list",
+      "item_format": "| **Report / Presenter** | **Key Points** | **Outcome** |\n| --- | --- | --- |"
+    },
+    {
+      "title": "Motions & Votes",
+      "instruction": "Document all formal motions made, who moved and seconded them, the vote outcome, and whether the motion passed or failed.",
+      "format": "list",
+      "item_format": "| **Motion** | **Moved By** | **Seconded By** | **Vote Result** |\n| --- | --- | --- | --- |"
+    },
+    {
+      "title": "Key Decisions & Directives",
+      "instruction": "Summarize major decisions made, strategic directives issued, and any guidance the board or executives provided to leadership.",
+      "format": "paragraph"
+    },
+    {
+      "title": "Action Items & Follow-Up",
+      "instruction": "List all tasks assigned, follow-up items requested, and items deferred to a future meeting. Include owners and deadlines.",
+      "format": "list",
+      "item_format": "| **Owner** | **Action Item** | **Due / Next Meeting** |\n| --- | --- | --- |"
+    },
+    {
+      "title": "Next Meeting",
+      "instruction": "Note the date, time, location, and any pre-announced agenda items for the next scheduled meeting.",
+      "format": "paragraph"
+    }
+  ]
+}

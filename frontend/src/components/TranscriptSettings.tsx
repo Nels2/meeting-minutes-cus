@@ -219,11 +219,11 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
         <div>
             <div>
                 {/* <div className="flex justify-between items-center mb-4">
-                    <h3 className="text-lg font-semibold text-gray-900">Transcript Settings</h3>
+                    <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Transcript Settings</h3>
                 </div> */}
                 <div className="space-y-4 pb-6">
                     <div>
-                        <Label className="block text-sm font-medium text-gray-700 mb-1">
+                        <Label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                             Transcript Model
                         </Label>
                         <div className="flex space-x-2 mx-1">
@@ -285,7 +285,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                     {isCustomOpenAI && (
                         <div className="space-y-4">
                             <div>
-                                <Label className="block text-sm font-medium text-gray-700 mb-1">
+                                <Label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                                     Custom OpenAI Endpoint
                                 </Label>
                                 <Input
@@ -296,7 +296,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                 />
                             </div>
                             <div>
-                                <Label className="block text-sm font-medium text-gray-700 mb-1">
+                                <Label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                                     Model
                                 </Label>
                                 <Input
@@ -307,7 +307,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                 />
                             </div>
                             <div>
-                                <Label className="block text-sm font-medium text-gray-700 mb-1">
+                                <Label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                                     Transcription API
                                 </Label>
                                 <Select
@@ -325,7 +325,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                             </div>
                             {customOpenAITranscriptionApi === 'chat' && (
                                 <div>
-                                    <Label className="block text-sm font-medium text-gray-700 mb-1">
+                                    <Label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                                         Chat Prompt (Optional)
                                     </Label>
                                     <Textarea
@@ -362,13 +362,13 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
 
                     {requiresApiKey && (
                         <div>
-                            <Label className="block text-sm font-medium text-gray-700 mb-1">
+                            <Label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
                                 API Key
                             </Label>
                             <div className="relative mx-1">
                                 <Input
                                     type={showApiKey ? "text" : "password"}
-                                    className={`pr-24 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 ${isApiKeyLocked ? 'bg-gray-100 cursor-not-allowed' : ''
+                                    className={`pr-24 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 ${isApiKeyLocked ? 'bg-gray-100 dark:bg-gray-800 cursor-not-allowed' : ''
                                         }`}
                                     value={apiKey || ''}
                                     onChange={(e) => setApiKey(e.target.value)}
@@ -379,7 +379,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                 {isApiKeyLocked && (
                                     <div
                                         onClick={handleInputClick}
-                                        className="absolute inset-0 flex items-center justify-center bg-gray-100 bg-opacity-50 rounded-md cursor-not-allowed"
+                                        className="absolute inset-0 flex items-center justify-center bg-gray-100 bg-opacity-50 rounded-md cursor-not-allowed dark:bg-gray-800 dark:bg-opacity-60"
                                     />
                                 )}
                                 <div className="absolute inset-y-0 right-0 pr-1 flex items-center">

@@ -1,0 +1,49 @@
+{
+  "name": "Incident Post-Mortem / Root Cause Analysis",
+  "description": "Document system outages, operational failures, security incidents, or service disruptions with a structured timeline, root cause, and corrective actions.",
+  "sections": [
+    {
+      "title": "Incident Summary",
+      "instruction": "Provide a concise summary of the incident: what happened, when it was detected, what systems or services were affected, and the overall business impact.",
+      "format": "paragraph"
+    },
+    {
+      "title": "Incident Details",
+      "instruction": "Capture the key metadata of the incident including severity level, affected systems, duration, number of users or members impacted, and detection method.",
+      "format": "list",
+      "item_format": "| **Field** | **Value** |\n| --- | --- |"
+    },
+    {
+      "title": "Participants",
+      "instruction": "List the individuals involved in the post-mortem discussion, including their roles (incident commander, responders, reviewers, etc.).",
+      "format": "list"
+    },
+    {
+      "title": "Incident Timeline",
+      "instruction": "Reconstruct the chronological sequence of events from first sign of trouble through detection, escalation, response, and resolution.",
+      "format": "list",
+      "item_format": "| **Time** | **Event / Action** | **Who** |\n| --- | --- | --- |"
+    },
+    {
+      "title": "Root Cause Analysis",
+      "instruction": "Describe the root cause(s) of the incident. Include contributing factors, chain of failures, and any systemic issues that enabled the incident to occur or worsen.",
+      "format": "paragraph"
+    },
+    {
+      "title": "What Went Well",
+      "instruction": "List things that worked effectively during the incident response — detection speed, communication, tooling, teamwork, or processes that held up.",
+      "format": "list"
+    },
+    {
+      "title": "What Went Wrong / Gaps Identified",
+      "instruction": "List failures, delays, miscommunications, missing alerts, process gaps, or anything that made the incident worse or harder to resolve.",
+      "format": "list"
+    },
+    {
+      "title": "Corrective Actions & Remediation",
+      "instruction": "List all action items to prevent recurrence, reduce future impact, or improve response. Include owners and target completion dates.",
+      "format": "list",
+      "item_format": "| **Owner** | **Action Item** | **Priority** | **Due Date** |\n| --- | --- | --- | --- |"
+    }
+  ]
+}

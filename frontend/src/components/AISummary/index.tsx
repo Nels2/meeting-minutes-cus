@@ -648,9 +648,9 @@ export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerat
 
   if (!hasContent && status === 'completed') {
     return (
-      <div className="w-full p-4 bg-gray-50 border border-gray-200 rounded-lg text-center">
-        <p className="text-gray-600">No summary content available.</p>
-        <p className="text-gray-500 text-sm mt-1">Try generating a new summary.</p>
+      <div className="w-full p-4 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-lg text-center">
+        <p className="text-gray-600 dark:text-gray-300">No summary content available.</p>
+        <p className="text-gray-500 dark:text-gray-400 text-sm mt-1">Try generating a new summary.</p>
       </div>
     );
   }
@@ -672,7 +672,7 @@ export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerat
       {/* Context Menu */}
       {contextMenu.visible && selectedBlocks.length > 0 && (
         <div
-          className="fixed z-50 bg-white shadow-lg rounded-lg py-1 min-w-[160px] border border-gray-200
+          className="fixed z-50 bg-white dark:bg-gray-900 shadow-lg rounded-lg py-1 min-w-[160px] border border-gray-200 dark:border-gray-800
                      animate-in fade-in zoom-in-95 duration-150"
           style={{ 
             left: contextMenu.x, 
@@ -681,14 +681,14 @@ export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerat
           onClick={e => e.stopPropagation()}
         >
           <button
-            className="w-full px-4 py-2 text-left hover:bg-gray-100 flex items-center space-x-2"
+            className="w-full px-4 py-2 text-left hover:bg-gray-100 dark:hover:bg-gray-800 flex items-center space-x-2"
             onClick={handleCopyBlocks}
           >
             <span className="text-gray-600">📋</span>
             <span>Copy {selectedBlocks.length > 1 ? `${selectedBlocks.length} blocks` : 'block'}</span>
           </button>
           <button
-            className="w-full px-4 py-2 text-left hover:bg-gray-100 text-red-600 flex items-center space-x-2"
+            className="w-full px-4 py-2 text-left hover:bg-gray-100 dark:hover:bg-gray-800 text-red-600 dark:text-red-400 flex items-center space-x-2"
             onClick={handleDeleteBlocks}
           >
             <span>🗑️</span>

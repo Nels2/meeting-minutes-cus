@@ -1,0 +1,50 @@
+{
+  "name": "Budget Review Meeting",
+  "description": "Capture credit union budget review discussions including financial performance, variance analysis, forecasts, and spending decisions.",
+  "sections": [
+    {
+      "title": "Meeting Overview",
+      "instruction": "Summarize the purpose of the meeting — whether it is an annual budget approval, mid-year review, monthly variance review, or departmental budget discussion — and the time period being reviewed.",
+      "format": "paragraph"
+    },
+    {
+      "title": "Attendees",
+      "instruction": "List all attendees and their roles (e.g., CFO, department heads, board treasurer, budget analyst).",
+      "format": "list"
+    },
+    {
+      "title": "Financial Performance Summary",
+      "instruction": "Summarize the overall financial performance discussed — income, expenses, net income, asset growth, loan volume, or other key metrics reviewed against budget.",
+      "format": "paragraph"
+    },
+    {
+      "title": "Budget vs. Actual Variances",
+      "instruction": "Capture the key budget variances reviewed, explanations provided, and whether variances are expected to persist.",
+      "format": "list",
+      "item_format": "| **Line Item / Area** | **Budgeted** | **Actual** | **Variance** | **Explanation** |\n| --- | --- | --- | --- | --- |"
+    },
+    {
+      "title": "Departmental Highlights",
+      "instruction": "Summarize any department-specific budget discussions, notable over or under-spending, and context provided by department heads.",
+      "format": "list",
+      "item_format": "| **Department** | **Key Points** | **Status** |\n| --- | --- | --- |"
+    },
+    {
+      "title": "Forecast & Outlook",
+      "instruction": "Summarize any updated forecasts, projections, or outlook adjustments discussed for the remainder of the fiscal year or future periods.",
+      "format": "paragraph"
+    },
+    {
+      "title": "Decisions & Approvals",
+      "instruction": "List any budget adjustments, reallocation requests, new spending approvals, or freezes that were decided during the meeting.",
+      "format": "list",
+      "item_format": "| **Decision** | **Amount / Impact** | **Approved By** |\n| --- | --- | --- |"
+    },
+    {
+      "title": "Action Items & Follow-Up",
+      "instruction": "List follow-up tasks such as revised projections to submit, additional analysis requested, or approvals pending. Include owners and deadlines.",
+      "format": "list",
+      "item_format": "| **Owner** | **Action Item** | **Due Date** |\n| --- | --- | --- |"
+    }
+  ]
+}

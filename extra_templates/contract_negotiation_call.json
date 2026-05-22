@@ -1,0 +1,51 @@
+{
+  "name": "Contract / Negotiation Call",
+  "description": "Document vendor contract discussions, procurement negotiations, and agreement reviews including key terms, open issues, and commitments made.",
+  "sections": [
+    {
+      "title": "Call Overview",
+      "instruction": "Summarize the purpose of the call — what contract or agreement is being negotiated, what stage the negotiation is at, and what the primary objectives were for this session.",
+      "format": "paragraph"
+    },
+    {
+      "title": "Participants",
+      "instruction": "List all parties on the call, their organization, and their role (e.g., vendor account executive, legal counsel, procurement lead, decision maker).",
+      "format": "list",
+      "item_format": "| **Name** | **Organization** | **Role** |\n| --- | --- | --- |"
+    },
+    {
+      "title": "Contract / Agreement Summary",
+      "instruction": "Summarize the contract being discussed — what it covers, the term length, total value or pricing structure, and any key service components.",
+      "format": "paragraph"
+    },
+    {
+      "title": "Terms Discussed",
+      "instruction": "Capture each term or clause that was discussed, the current proposed language, and the outcome of the discussion.",
+      "format": "list",
+      "item_format": "| **Term / Clause** | **Current Position** | **Outcome / Status** |\n| --- | --- | --- |"
+    },
+    {
+      "title": "Points of Agreement",
+      "instruction": "List all terms, conditions, or provisions that both parties agreed to during this call.",
+      "format": "list"
+    },
+    {
+      "title": "Open Issues & Sticking Points",
+      "instruction": "List unresolved issues, terms still under negotiation, or areas where the parties did not reach agreement. Note each party's position where applicable.",
+      "format": "list",
+      "item_format": "| **Issue** | **Our Position** | **Their Position** | **Next Step** |\n| --- | --- | --- | --- |"
+    },
+    {
+      "title": "Commitments Made",
+      "instruction": "List any specific commitments, concessions, or assurances made by either party during the call.",
+      "format": "list",
+      "item_format": "| **Party** | **Commitment / Concession** |\n| --- | --- |"
+    },
+    {
+      "title": "Next Steps",
+      "instruction": "List follow-up actions including revised drafts to be sent, approvals needed, legal review items, and the next scheduled call or deadline.",
+      "format": "list",
+      "item_format": "| **Owner** | **Action** | **Due Date** |\n| --- | --- | --- |"
+    }
+  ]
+}

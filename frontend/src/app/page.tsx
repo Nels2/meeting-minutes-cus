@@ -1,6 +1,8 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { listen } from '@tauri-apps/api/event';
+import { appDataDir } from '@tauri-apps/api/path';
 import { motion } from 'framer-motion';
 import { RecordingControls } from '@/components/RecordingControls';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
@@ -21,6 +23,7 @@ import { TranscriptRecovery } from '@/components/TranscriptRecovery';
 import { indexedDBService } from '@/services/indexedDBService';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
+import { recordingService } from '@/services/recordingService';
 
 export default function Home() {
   // Local page state (not moved to contexts)
@@ -66,6 +69,93 @@ export default function Home() {
     // Track page view
     Analytics.trackPageView('home');
   }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    const unlisteners: Array<() => void> = [];
+
+    const setupMeetingDetectionListeners = async () => {
+      const unlistenAutoStart = await listen<{ meeting_name?: string; app_name: string }>(
+        'auto-start-recording',
+        async (event) => {
+          if (recordingState.isRecording || status !== RecordingStatus.IDLE) {
+            console.log('Ignoring meeting auto-start because recording is not idle');
+            return;
+          }
+
+          const meetingName = event.payload.meeting_name || `${event.payload.app_name} Meeting`;
+          try {
+            await handleRecordingStart({
+              meetingName,
+              source: 'meeting_detection_auto',
+            });
+            toast.success(`Recording started for ${event.payload.app_name}`);
+          } catch (error) {
+            console.error('Failed to auto-start recording:', error);
+            toast.error('Failed to auto-start recording');
+          }
+        }
+      );
+      if (!isMounted) {
+        unlistenAutoStart();
+        return;
+      }
+      unlisteners.push(unlistenAutoStart);
+
+      const unlistenAutoStop = await listen('auto-stop-recording', async () => {
+        if (!recordingState.isRecording) {
+          console.log('Ignoring meeting auto-stop because recording is not active');
+          return;
+        }
+
+        try {
+          setIsStopping(true);
+          const dataDir = await appDataDir();
+          const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+          const savePath = `${dataDir}/recording-${timestamp}.wav`;
+          await recordingService.stopRecording(savePath);
+          await handleRecordingStop(true);
+          Analytics.trackButtonClick('stop_recording', 'meeting_detection_auto');
+          toast.success('Recording stopped because the meeting ended');
+        } catch (error) {
+          console.error('Failed to auto-stop recording:', error);
+          toast.error('Failed to stop recording automatically');
+          setIsStopping(false);
+        }
+      });
+      if (!isMounted) {
+        unlistenAutoStop();
+        return;
+      }
+      unlisteners.push(unlistenAutoStop);
+
+      const unlistenDetected = await listen<{ app_name: string }>('meeting-detected', (event) => {
+        toast.info(`${event.payload.app_name} meeting detected`, {
+          description: 'Auto-recording will start if enabled in Settings.',
+        });
+      });
+      if (!isMounted) {
+        unlistenDetected();
+        return;
+      }
+      unlisteners.push(unlistenDetected);
+    };
+
+    setupMeetingDetectionListeners().catch((error) => {
+      console.error('Failed to setup meeting detection listeners:', error);
+    });
+
+    return () => {
+      isMounted = false;
+      unlisteners.forEach((unlisten) => unlisten());
+    };
+  }, [
+    handleRecordingStart,
+    handleRecordingStop,
+    recordingState.isRecording,
+    setIsStopping,
+    status,
+  ]);
 
   // Startup recovery check
   useEffect(() => {
@@ -194,7 +284,7 @@ export default function Home() {
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3, ease: 'easeOut' }}
-      className="flex flex-col h-screen bg-gray-50"
+      className="flex flex-col h-screen bg-gray-50 dark:bg-gray-950"
     >
       {/* All Modals supported*/}
       <SettingsModals
@@ -231,7 +321,7 @@ export default function Home() {
                 }}
               >
                 <div className="w-2/3 max-w-[750px] flex justify-center">
-                  <div className="bg-white rounded-full shadow-lg flex items-center">
+                  <div className="bg-white dark:bg-gray-900 rounded-full shadow-lg flex items-center">
                     <RecordingControls
                       isRecording={recordingState.isRecording}
                       onRecordingStop={(callApi = true) => handleRecordingStop(callApi)}

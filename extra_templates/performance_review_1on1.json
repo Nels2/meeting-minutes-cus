@@ -1,0 +1,44 @@
+{
+  "name": "Performance Review / 1-on-1",
+  "description": "Capture structured notes from employee performance reviews and recurring 1-on-1 meetings, including goals, feedback, and action items.",
+  "sections": [
+    {
+      "title": "Meeting Overview",
+      "instruction": "Summarize the type of meeting (annual review, mid-year check-in, weekly 1-on-1, etc.), the participants, and the primary focus or purpose of the conversation.",
+      "format": "paragraph"
+    },
+    {
+      "title": "Participants",
+      "instruction": "List the employee, manager, and any other attendees. Note their roles or titles if mentioned.",
+      "format": "list"
+    },
+    {
+      "title": "Performance Highlights",
+      "instruction": "Summarize the key accomplishments, strengths, and positive contributions discussed during the meeting.",
+      "format": "paragraph"
+    },
+    {
+      "title": "Areas for Growth & Feedback",
+      "instruction": "Capture constructive feedback, development opportunities, skill gaps, or behavioral areas mentioned for improvement.",
+      "format": "list",
+      "item_format": "| **Area** | **Feedback / Context** | **Priority** |\n| --- | --- | --- |"
+    },
+    {
+      "title": "Goals & Objectives",
+      "instruction": "List current goals reviewed, new goals set, and any goal adjustments discussed. Include timelines or metrics where mentioned.",
+      "format": "list",
+      "item_format": "| **Goal** | **Status / Target** | **Due Date** |\n| --- | --- | --- |"
+    },
+    {
+      "title": "Employee Input & Concerns",
+      "instruction": "Summarize anything raised by the employee — questions, concerns, requests for support, career aspirations, or general feedback about their role or team.",
+      "format": "paragraph"
+    },
+    {
+      "title": "Action Items & Follow-Up",
+      "instruction": "List all commitments made by either party, including who owns each item and any deadlines discussed.",
+      "format": "list",
+      "item_format": "| **Owner** | **Action Item** | **Due Date** |\n| --- | --- | --- |"
+    }
+  ]
+}

@@ -1,0 +1,61 @@
+{
+  "name": "Strategic Planning Session",
+  "description": "Capture credit union strategic planning sessions including environmental scans, goal setting, initiative prioritization, and multi-year planning discussions.",
+  "sections": [
+    {
+      "title": "Session Overview",
+      "instruction": "Summarize the purpose and scope of the planning session — whether it is an annual strategic plan, a multi-year roadmap, a retreat, or a focused strategy workshop — and the planning horizon being addressed.",
+      "format": "paragraph"
+    },
+    {
+      "title": "Participants",
+      "instruction": "List all attendees including board members, leadership team, facilitators, and any external consultants or guests.",
+      "format": "list"
+    },
+    {
+      "title": "Mission, Vision & Values Review",
+      "instruction": "Summarize any discussion or updates to the organization's mission, vision, or core values. Note if changes were proposed or reaffirmed.",
+      "format": "paragraph"
+    },
+    {
+      "title": "Environmental Scan & Key Trends",
+      "instruction": "Capture the key external and internal factors discussed — economic conditions, competitive landscape, regulatory environment, member trends, technology changes, or workforce challenges.",
+      "format": "list",
+      "item_format": "| **Factor** | **Internal / External** | **Opportunity or Threat** |\n| --- | --- | --- |"
+    },
+    {
+      "title": "SWOT / Assessment Summary",
+      "instruction": "Summarize the strengths, weaknesses, opportunities, and threats identified during any assessment exercise conducted during the session.",
+      "format": "list",
+      "item_format": "| **Category** | **Key Points** |\n| --- | --- |"
+    },
+    {
+      "title": "Strategic Goals & Priorities",
+      "instruction": "List the strategic goals, pillars, or priorities established for the planning period. Include any associated metrics, targets, or success criteria discussed.",
+      "format": "list",
+      "item_format": "| **Goal / Priority** | **Target / Metric** | **Timeframe** |\n| --- | --- | --- |"
+    },
+    {
+      "title": "Key Initiatives & Projects",
+      "instruction": "List the major initiatives, projects, or programs identified to achieve the strategic goals. Include sponsorship and priority level where discussed.",
+      "format": "list",
+      "item_format": "| **Initiative** | **Strategic Goal Supported** | **Sponsor / Owner** | **Priority** |\n| --- | --- | --- | --- |"
+    },
+    {
+      "title": "Resource & Capacity Considerations",
+      "instruction": "Summarize discussions about budget, staffing, technology, or other resource constraints and how they affect plan feasibility.",
+      "format": "paragraph"
+    },
+    {
+      "title": "Decisions Made",
+      "instruction": "List key decisions reached during the session including approved goals, deprioritized initiatives, or strategic pivots agreed upon.",
+      "format": "list"
+    },
+    {
+      "title": "Next Steps & Accountability",
+      "instruction": "List follow-up actions to finalize the plan — drafts to prepare, approvals needed, communication plans, and implementation milestones. Include owners and deadlines.",
+      "format": "list",
+      "item_format": "| **Owner** | **Next Step** | **Due Date** |\n| --- | --- | --- |"
+    }
+  ]
+}

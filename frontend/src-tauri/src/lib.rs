@@ -36,17 +36,19 @@ pub(crate) use perf_trace;
 
 // Declare audio module
 pub mod analytics;
+pub mod anthropic;
 pub mod api;
 pub mod audio;
+pub mod calendar;
 pub mod config;
 pub mod console_utils;
 pub mod database;
+pub mod groq;
+pub mod meeting_detector;
 pub mod notifications;
 pub mod ollama;
 pub mod onboarding;
 pub mod openai;
-pub mod anthropic;
-pub mod groq;
 pub mod openrouter;
 pub mod parakeet_engine;
 pub mod state;
@@ -55,7 +57,7 @@ pub mod tray;
 pub mod utils;
 pub mod whisper_engine;
 
-use audio::{list_audio_devices, AudioDevice, trigger_audio_permission};
+use audio::{list_audio_devices, trigger_audio_permission, AudioDevice};
 use log::{error as log_error, info as log_info};
 use notifications::commands::NotificationManagerState;
 use std::sync::Arc;
@@ -124,10 +126,7 @@ async fn start_recording<R: Runtime>(
             )
             .await
             {
-                log_error!(
-                    "Failed to show recording started notification: {}",
-                    e
-                );
+                log_error!("Failed to show recording started notification: {}", e);
             } else {
                 log_info!("Successfully showed recording started notification");
             }
@@ -185,10 +184,7 @@ async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> R
             )
             .await
             {
-                log_error!(
-                    "Failed to show recording stopped notification: {}",
-                    e
-                );
+                log_error!("Failed to show recording stopped notification: {}", e);
             } else {
                 log_info!("Successfully showed recording stopped notification");
             }
@@ -244,6 +240,27 @@ async fn save_transcript(file_path: String, content: String) -> Result<(), Strin
         .map_err(|e| format!("Failed to write transcript: {}", e))?;
 
     log_info!("Transcript saved successfully");
+    Ok(())
+}
+
+#[tauri::command]
+async fn write_export_file(file_path: String, contents: Vec<u8>) -> Result<(), String> {
+    log_info!("Writing export file to: {}", file_path);
+
+    if contents.is_empty() {
+        return Err("Export file contents cannot be empty".to_string());
+    }
+
+    let path = std::path::Path::new(&file_path);
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create export directory: {}", e))?;
+        }
+    }
+
+    std::fs::write(path, contents).map_err(|e| format!("Failed to write export file: {}", e))?;
+    log_info!("Export file written successfully");
     Ok(())
 }
 
@@ -357,10 +374,7 @@ async fn start_recording_with_devices_and_meeting<R: Runtime>(
             )
             .await
             {
-                log_error!(
-                    "Failed to show recording started notification: {}",
-                    e
-                );
+                log_error!("Failed to show recording started notification: {}", e);
             }
 
             Ok(())
@@ -416,7 +430,10 @@ pub fn run() {
             None::<notifications::manager::NotificationManager<tauri::Wry>>,
         )) as NotificationManagerState<tauri::Wry>)
         .manage(audio::init_system_audio_state())
-        .manage(summary::summary_engine::ModelManagerState(Arc::new(tokio::sync::Mutex::new(None))))
+        .manage(meeting_detector::commands::init_meeting_detector_state())
+        .manage(summary::summary_engine::ModelManagerState(Arc::new(
+            tokio::sync::Mutex::new(None),
+        )))
         .setup(|_app| {
             log::info!("Application setup complete");
 
@@ -430,7 +447,11 @@ pub fn run() {
             let app_for_notif = _app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let notif_state = app_for_notif.state::<NotificationManagerState<tauri::Wry>>();
-                match notifications::commands::initialize_notification_manager(app_for_notif.clone()).await {
+                match notifications::commands::initialize_notification_manager(
+                    app_for_notif.clone(),
+                )
+                .await
+                {
                     Ok(manager) => {
                         // Set default consent and permissions on first launch
                         if let Err(e) = manager.set_consent(true).await {
@@ -454,6 +475,20 @@ pub fn run() {
             // Set models directory to use app_data_dir (unified storage location)
             whisper_engine::commands::set_models_directory(&_app.handle());
 
+            // Start meeting detection automatically only if the user opted in.
+            let app_for_meeting_detection = _app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let detector_state = app_for_meeting_detection
+                    .state::<meeting_detector::commands::MeetingDetectorState>();
+                let detector = detector_state.read().await;
+                if detector.get_settings().await.enabled {
+                    log::info!("Meeting detection enabled in settings; starting monitor");
+                    detector
+                        .start_monitoring(app_for_meeting_detection.clone())
+                        .await;
+                }
+            });
+
             // Initialize Whisper engine on startup
             tauri::async_runtime::spawn(async {
                 if let Err(e) = whisper_engine::commands::whisper_init().await {
@@ -474,7 +509,11 @@ pub fn run() {
             // Initialize ModelManager for summary engine (async, non-blocking)
             let app_handle_for_model_manager = _app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                match summary::summary_engine::commands::init_model_manager_at_startup(&app_handle_for_model_manager).await {
+                match summary::summary_engine::commands::init_model_manager_at_startup(
+                    &app_handle_for_model_manager,
+                )
+                .await
+                {
                     Ok(_) => log::info!("ModelManager initialized successfully at startup"),
                     Err(e) => {
                         log::warn!("Failed to initialize ModelManager at startup: {}", e);
@@ -504,7 +543,10 @@ pub fn run() {
             log::info!("Initializing bundled templates directory...");
             if let Ok(resource_path) = _app.handle().path().resource_dir() {
                 let templates_dir = resource_path.join("templates");
-                log::info!("Setting bundled templates directory to: {:?}", templates_dir);
+                log::info!(
+                    "Setting bundled templates directory to: {:?}",
+                    templates_dir
+                );
                 summary::templates::set_bundled_templates_dir(templates_dir);
             } else {
                 log::warn!("Failed to resolve resource directory for templates");
@@ -599,6 +641,7 @@ pub fn run() {
             trigger_microphone_permission,
             start_recording_with_devices,
             start_recording_with_devices_and_meeting,
+            write_export_file,
             start_audio_level_monitoring,
             stop_audio_level_monitoring,
             is_audio_level_monitoring,
@@ -671,6 +714,7 @@ pub fn run() {
             summary::commands::api_save_meeting_detected_summary_language,
             summary::commands::api_detect_transcript_summary_language,
             summary::commands::api_cancel_summary,
+            summary::commands::api_chat_with_meeting,
             // Template commands
             summary::template_commands::api_list_templates,
             summary::template_commands::api_get_template_details,
@@ -690,6 +734,16 @@ pub fn run() {
             audio::recording_preferences::get_default_recordings_folder_path,
             audio::recording_preferences::open_recordings_folder,
             audio::recording_preferences::select_recording_folder,
+            calendar::calendar_get_o365_settings,
+            calendar::calendar_save_o365_settings,
+            calendar::calendar_get_o365_auth_url,
+            calendar::calendar_start_o365_sign_in,
+            calendar::calendar_exchange_o365_redirect,
+            calendar::calendar_disconnect_o365,
+            calendar::calendar_test_o365_connection,
+            calendar::calendar_fetch_o365_events,
+            calendar::calendar_get_current_o365_event,
+            calendar::calendar_build_event_context,
             audio::recording_preferences::get_available_audio_backends,
             audio::recording_preferences::get_current_audio_backend,
             audio::recording_preferences::set_audio_backend,
@@ -711,6 +765,15 @@ pub fn run() {
             notifications::commands::initialize_notification_manager_manual,
             notifications::commands::test_notification_with_auto_consent,
             notifications::commands::get_notification_stats,
+            // Meeting auto-detection commands
+            meeting_detector::commands::enable_meeting_detection,
+            meeting_detector::commands::disable_meeting_detection,
+            meeting_detector::commands::get_meeting_detection_status,
+            meeting_detector::commands::get_meeting_detection_settings,
+            meeting_detector::commands::set_meeting_detection_settings,
+            meeting_detector::commands::check_for_active_meeting,
+            meeting_detector::commands::start_meeting_monitor,
+            meeting_detector::commands::stop_meeting_monitor,
             // System audio capture commands
             audio::system_audio_commands::start_system_audio_capture_command,
             audio::system_audio_commands::list_system_audio_devices_command,
@@ -775,7 +838,6 @@ pub fn run() {
                         } else {
                             log::warn!("AppState not available for database cleanup (likely first launch)");
                         }
-
                         // Clean up sidecar
                         log::info!("Cleaning up sidecar...");
                         if let Err(e) = summary::summary_engine::force_shutdown_sidecar().await {

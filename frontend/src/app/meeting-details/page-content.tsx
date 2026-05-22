@@ -8,6 +8,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { TranscriptPanel } from '@/components/MeetingDetails/TranscriptPanel';
 import { SummaryPanel } from '@/components/MeetingDetails/SummaryPanel';
+import { MeetingChatPanel } from '@/components/MeetingDetails/MeetingChatPanel';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 
 // Custom hooks
@@ -128,6 +129,7 @@ export default function PageContent({
     meetingTitle: meetingData.meetingTitle,
     aiSummary: meetingData.aiSummary,
     blockNoteSummaryRef: meetingData.blockNoteSummaryRef,
+    customPrompt,
   });
 
   const meetingOperations = useMeetingOperations({
@@ -138,6 +140,15 @@ export default function PageContent({
   useEffect(() => {
     Analytics.trackPageView('meeting_details');
   }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const pendingContext = sessionStorage.getItem('pendingCalendarContext');
+    if (!pendingContext) return;
+
+    setCustomPrompt((current) => current.trim() ? current : pendingContext);
+    sessionStorage.removeItem('pendingCalendarContext');
+  }, [meeting.id]);
 
   // Auto-generate summary when flag is set
   useEffect(() => {
@@ -168,7 +179,7 @@ export default function PageContent({
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3, ease: 'easeOut' }}
-      className="flex flex-col h-screen bg-gray-50"
+      className="flex flex-col h-screen bg-gray-50 dark:bg-gray-950"
     >
       <div className="flex flex-1 overflow-hidden">
         <TranscriptPanel
@@ -177,6 +188,7 @@ export default function PageContent({
           onPromptChange={setCustomPrompt}
           onCopyTranscript={copyOperations.handleCopyTranscript}
           onOpenMeetingFolder={meetingOperations.handleOpenMeetingFolder}
+          onExportMeeting={copyOperations.handleExportMeeting}
           isRecording={isRecording}
           disableAutoScroll={true}
           // Pagination props for efficient loading
@@ -227,6 +239,7 @@ export default function PageContent({
           isModelConfigLoading={false}
           onOpenModelSettings={handleRegisterModalOpen}
         />
+        <MeetingChatPanel meetingId={meeting.id} customContext={customPrompt} />
       </div>
     </motion.div>
   );

@@ -1158,13 +1158,33 @@ pub async fn debug_backend_connection<R: Runtime>(app: AppHandle<R>) -> Result<S
 pub async fn open_external_url(url: String) -> Result<(), String> {
     use std::process::Command;
 
+    let url = url.trim().to_string();
+    if url.is_empty() {
+        return Err("URL cannot be empty".to_string());
+    }
+
     let result = if cfg!(target_os = "windows") {
-        Command::new("cmd").args(&["/C", "start", &url]).output()
+        // Avoid `cmd /C start <url>` here. OAuth URLs contain `&`, which cmd can
+        // parse as command separators and silently drop later query parameters.
+        // Launch Edge directly so the full OAuth URL is passed as one argument.
+        Command::new("msedge.exe")
+            .arg(&url)
+            .spawn()
+            .or_else(|_| {
+                Command::new(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe")
+                    .arg(&url)
+                    .spawn()
+            })
+            .or_else(|_| {
+                Command::new(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")
+                    .arg(&url)
+                    .spawn()
+            })
     } else if cfg!(target_os = "macos") {
-        Command::new("open").arg(&url).output()
+        Command::new("open").arg(&url).spawn()
     } else {
         // Linux and other Unix-like systems
-        Command::new("xdg-open").arg(&url).output()
+        Command::new("xdg-open").arg(&url).spawn()
     };
 
     match result {

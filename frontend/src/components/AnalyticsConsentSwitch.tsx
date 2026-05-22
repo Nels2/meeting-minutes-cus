@@ -157,15 +157,15 @@ export default function AnalyticsConsentSwitch() {
     <>
       <div className="space-y-4">
         <div>
-          <h3 className="text-base font-semibold text-gray-800 mb-2">Usage Analytics</h3>
+          <h3 className="text-base font-semibold text-gray-800 dark:text-gray-100 mb-2">Usage Analytics</h3>
           <p className="text-sm text-gray-600 mb-4">
             Usage analytics is off by default. You can turn it on to share anonymous product and performance data; no personal content is collected.
           </p>
         </div>
 
-        <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-200">
+        <div className="flex items-center justify-between p-3 bg-gray-50 dark:bg-gray-900 rounded-lg border border-gray-200 dark:border-gray-800">
           <div>
-            <h4 className="font-semibold text-gray-800">Enable Analytics</h4>
+            <h4 className="font-semibold text-gray-800 dark:text-gray-100">Enable Analytics</h4>
             <p className="text-sm text-gray-600">
               {isProcessing ? 'Updating...' : 'Off unless you choose to enable it'}
             </p>
@@ -184,15 +184,15 @@ export default function AnalyticsConsentSwitch() {
 
         {/* User ID Display */}
         {isAnalyticsOptedIn && userId && (
-          <div className="p-4 border rounded-lg bg-gray-50">
+          <div className="p-4 border dark:border-gray-800 rounded-lg bg-gray-50 dark:bg-gray-900">
             <div className="flex items-start justify-between gap-4">
               <div className="flex-1 min-w-0">
-                <div className="font-medium text-gray-800 mb-1">Your User ID</div>
+                <div className="font-medium text-gray-800 dark:text-gray-100 mb-1">Your User ID</div>
                 <p className="text-xs text-gray-600 mb-2">
                   Share this ID when reporting issues to help us investigate your issue logs
                 </p>
                 <div className="flex items-center gap-2">
-                  <code className="text-xs text-gray-700 bg-white px-2 py-1 rounded border border-gray-300 font-mono flex-1 truncate">
+                  <code className="text-xs text-gray-700 dark:text-gray-300 bg-white dark:bg-gray-950 px-2 py-1 rounded border border-gray-300 dark:border-gray-700 font-mono flex-1 truncate">
                     {userId}
                   </code>
                   <Button

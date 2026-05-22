@@ -1,0 +1,55 @@
+{
+  "name": "Supervisory Committee Meeting",
+  "description": "Document credit union supervisory committee meetings including audit findings, compliance reviews, internal controls assessments, and member complaint reviews.",
+  "sections": [
+    {
+      "title": "Meeting Overview",
+      "instruction": "Summarize the meeting purpose, the credit union name, and any specific focus areas for this session (e.g., annual audit review, internal controls, exam follow-up).",
+      "format": "paragraph"
+    },
+    {
+      "title": "Attendees & Quorum",
+      "instruction": "List supervisory committee members present, staff attendees, and any external auditors or guests. Note whether quorum was established.",
+      "format": "list"
+    },
+    {
+      "title": "Agenda Items",
+      "instruction": "List the agenda items covered during the meeting.",
+      "format": "list"
+    },
+    {
+      "title": "Audit & Exam Findings",
+      "instruction": "Summarize findings from internal audits, external audits, or regulatory examinations reviewed during the meeting. Include finding severity and any management responses.",
+      "format": "list",
+      "item_format": "| **Finding** | **Source / Auditor** | **Severity** | **Management Response** |\n| --- | --- | --- | --- |"
+    },
+    {
+      "title": "Internal Controls Review",
+      "instruction": "Summarize the committee's review of internal controls, segregation of duties, fraud risk areas, or any control gaps identified or remediated.",
+      "format": "paragraph"
+    },
+    {
+      "title": "Compliance & Regulatory Items",
+      "instruction": "List any compliance matters discussed, including BSA/AML, NCUA requirements, state regulations, or upcoming regulatory changes.",
+      "format": "list"
+    },
+    {
+      "title": "Member Complaints & Escalations",
+      "instruction": "Summarize any member complaints or escalations reviewed by the committee. Note resolution status and any systemic issues identified.",
+      "format": "list",
+      "item_format": "| **Issue / Complaint** | **Status** | **Resolution / Action** |\n| --- | --- | --- |"
+    },
+    {
+      "title": "Motions & Votes",
+      "instruction": "Document any formal motions made, who moved and seconded them, and the vote outcome.",
+      "format": "list",
+      "item_format": "| **Motion** | **Moved By** | **Seconded By** | **Result** |\n| --- | --- | --- | --- |"
+    },
+    {
+      "title": "Action Items & Follow-Up",
+      "instruction": "List all corrective actions, follow-up tasks, and items to be reported to the board. Include owners and due dates.",
+      "format": "list",
+      "item_format": "| **Owner** | **Action Item** | **Due Date** |\n| --- | --- | --- |"
+    }
+  ]
+}

@@ -63,7 +63,7 @@ pub use commands::{
     api_detect_transcript_summary_language, api_get_meeting_detected_summary_language,
     api_get_meeting_summary_language, api_get_summary, api_process_transcript,
     api_save_meeting_detected_summary_language, api_save_meeting_summary,
-    api_save_meeting_summary_language,
+    api_save_meeting_summary_language, __cmd__api_chat_with_meeting, api_chat_with_meeting,
 };
 
 // Re-export template commands

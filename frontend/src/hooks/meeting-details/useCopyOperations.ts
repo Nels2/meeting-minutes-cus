@@ -4,6 +4,17 @@ import { BlockNoteSummaryViewRef } from '@/components/AISummary/BlockNoteSummary
 import { toast } from 'sonner';
 import Analytics from '@/lib/analytics';
 import { invoke as invokeTauri } from '@tauri-apps/api/core';
+import {
+  exportMeetingBundle,
+  MeetingExportFormat,
+  summaryToMarkdown,
+} from '@/lib/meetingExport';
+
+function errorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string' && error.trim()) return error;
+  return fallback;
+}
 
 interface UseCopyOperationsProps {
   meeting: any;
@@ -11,6 +22,7 @@ interface UseCopyOperationsProps {
   meetingTitle: string;
   aiSummary: Summary | null;
   blockNoteSummaryRef: RefObject<BlockNoteSummaryViewRef>;
+  customPrompt?: string;
 }
 
 export function useCopyOperations({
@@ -19,6 +31,7 @@ export function useCopyOperations({
   meetingTitle,
   aiSummary,
   blockNoteSummaryRef,
+  customPrompt,
 }: UseCopyOperationsProps) {
 
   // Helper function to fetch ALL transcripts for copying (not just paginated data)
@@ -194,8 +207,44 @@ export function useCopyOperations({
     }
   }, [aiSummary, meetingTitle, meeting, blockNoteSummaryRef]);
 
+  const getCurrentSummaryMarkdown = useCallback(async (): Promise<string> => {
+    if (blockNoteSummaryRef.current?.getMarkdown) {
+      const markdown = await blockNoteSummaryRef.current.getMarkdown();
+      if (markdown.trim()) return markdown;
+    }
+
+    return summaryToMarkdown(aiSummary);
+  }, [aiSummary, blockNoteSummaryRef]);
+
+  const handleExportMeeting = useCallback(async (format: MeetingExportFormat) => {
+    try {
+      const allTranscripts = await fetchAllTranscripts(meeting.id);
+      const filePath = await exportMeetingBundle(format, {
+        meetingId: meeting.id,
+        title: meetingTitle || meeting.title || 'Meeting',
+        createdAt: meeting.created_at,
+        customContext: customPrompt,
+        summaryMarkdown: await getCurrentSummaryMarkdown(),
+        transcripts: allTranscripts,
+      });
+
+      if (!filePath) return;
+
+      toast.success(`Meeting exported as ${format.toUpperCase()}`);
+      await Analytics.trackFeatureUsedEnhanced('meeting_export', {
+        meeting_id: meeting.id,
+        format,
+        transcript_length: allTranscripts.length.toString(),
+      });
+    } catch (error) {
+      console.error('Failed to export meeting:', error);
+      toast.error(errorMessage(error, 'Failed to export meeting'));
+    }
+  }, [customPrompt, fetchAllTranscripts, getCurrentSummaryMarkdown, meeting, meetingTitle]);
+
   return {
     handleCopyTranscript,
     handleCopySummary,
+    handleExportMeeting,
   };
 }

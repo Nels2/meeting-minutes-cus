@@ -3,16 +3,24 @@
 import { useState, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
-import { Copy, FolderOpen, RefreshCw } from 'lucide-react';
+import { Copy, Download, FileText, FolderOpen, RefreshCw } from 'lucide-react';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import Analytics from '@/lib/analytics';
 import { RetranscribeDialog } from './RetranscribeDialog';
 import { useConfig } from '@/contexts/ConfigContext';
+import { MeetingExportFormat } from '@/lib/meetingExport';
 
 
 interface TranscriptButtonGroupProps {
   transcriptCount: number;
   onCopyTranscript: () => void;
   onOpenMeetingFolder: () => Promise<void>;
+  onExportMeeting: (format: MeetingExportFormat) => Promise<void>;
   meetingId?: string;
   meetingFolderPath?: string | null;
   onRefetchTranscripts?: () => Promise<void>;
@@ -23,6 +31,7 @@ export function TranscriptButtonGroup({
   transcriptCount,
   onCopyTranscript,
   onOpenMeetingFolder,
+  onExportMeeting,
   meetingId,
   meetingFolderPath,
   onRefetchTranscripts,
@@ -68,11 +77,39 @@ export function TranscriptButtonGroup({
           <span className="hidden lg:inline">Recording</span>
         </Button>
 
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={transcriptCount === 0}
+              title={transcriptCount === 0 ? 'No meeting content available' : 'Export Meeting'}
+            >
+              <Download className="xl:mr-2" size={18} />
+              <span className="hidden lg:inline">Export</span>
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="center">
+            <DropdownMenuItem onClick={() => onExportMeeting('markdown')}>
+              <FileText className="mr-2 h-4 w-4" />
+              Markdown
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onExportMeeting('docx')}>
+              <FileText className="mr-2 h-4 w-4" />
+              DOCX
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => onExportMeeting('pdf')}>
+              <FileText className="mr-2 h-4 w-4" />
+              PDF
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+
         {betaFeatures.importAndRetranscribe && meetingId && meetingFolderPath && (
           <Button
             size="sm"
             variant="outline"
-            className="bg-gradient-to-r from-blue-50 to-purple-50 hover:from-blue-100 hover:to-purple-100 border-blue-200 xl:px-4"
+            className="bg-gradient-to-r from-blue-50 to-purple-50 hover:from-blue-100 hover:to-purple-100 border-blue-200 text-blue-900 xl:px-4 dark:from-blue-950/60 dark:to-purple-950/50 dark:hover:from-blue-900/70 dark:hover:to-purple-900/60 dark:border-blue-800 dark:text-blue-100"
             onClick={() => {
               Analytics.trackButtonClick('enhance_transcript', 'meeting_details');
               setShowRetranscribeDialog(true);

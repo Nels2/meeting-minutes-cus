@@ -1,0 +1,50 @@
+{
+  "name": "Product Demo / Feedback Session",
+  "description": "Capture structured notes from product demonstrations, vendor evaluations, and user feedback sessions including reactions, issues, and next steps.",
+  "sections": [
+    {
+      "title": "Session Overview",
+      "instruction": "Summarize the product or feature being demonstrated, the purpose of the session (vendor eval, internal review, user testing, etc.), and the intended outcome.",
+      "format": "paragraph"
+    },
+    {
+      "title": "Participants",
+      "instruction": "List the presenter(s), demonstrators, and audience members. Note roles such as vendor rep, product owner, evaluator, or end user.",
+      "format": "list"
+    },
+    {
+      "title": "Features & Capabilities Demonstrated",
+      "instruction": "Summarize each feature, workflow, or capability shown during the demo. Capture how each was presented and any notable highlights or selling points.",
+      "format": "list",
+      "item_format": "| **Feature / Area** | **Description** | **Impression** |\n| --- | --- | --- |"
+    },
+    {
+      "title": "Strengths & Positives",
+      "instruction": "List the aspects of the product that received positive reactions, strong impressions, or aligned well with stated needs.",
+      "format": "list"
+    },
+    {
+      "title": "Concerns, Gaps & Issues",
+      "instruction": "List concerns raised, missing features, usability issues, integration gaps, or anything that did not meet expectations.",
+      "format": "list",
+      "item_format": "| **Concern / Gap** | **Raised By** | **Severity** |\n| --- | --- | --- |"
+    },
+    {
+      "title": "Questions & Answers",
+      "instruction": "Capture notable questions asked during or after the demo and the responses provided. Note any questions that were deferred or unanswered.",
+      "format": "list",
+      "item_format": "| **Question** | **Answer / Status** |\n| --- | --- |"
+    },
+    {
+      "title": "Overall Impression & Recommendation",
+      "instruction": "Summarize the group's overall reaction to the product. Include any preliminary recommendation, scoring, or consensus reached (e.g., advance to next phase, decline, request follow-up).",
+      "format": "paragraph"
+    },
+    {
+      "title": "Next Steps",
+      "instruction": "List follow-up actions including additional demos, reference checks, proposals, pilots, or internal discussions needed. Include owners and timelines.",
+      "format": "list",
+      "item_format": "| **Owner** | **Next Step** | **Due / Timing** |\n| --- | --- | --- |"
+    }
+  ]
+}
