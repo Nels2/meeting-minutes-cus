@@ -43,6 +43,7 @@ pub mod calendar;
 pub mod config;
 pub mod console_utils;
 pub mod database;
+pub mod deployment_config;
 pub mod groq;
 pub mod meeting_detector;
 pub mod notifications;

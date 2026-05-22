@@ -30,6 +30,12 @@ pub async fn initialize_database_on_startup(app: &AppHandle) -> Result<(), Strin
             .await
             .map_err(|e| format!("Failed to initialize database manager: {}", e))?;
 
+        if let Err(e) =
+            crate::deployment_config::apply_deployment_config(app, db_manager.pool()).await
+        {
+            log::warn!("Failed to apply deployment config: {}", e);
+        }
+
         app.manage(AppState { db_manager });
         info!("Database initialized successfully");
     }

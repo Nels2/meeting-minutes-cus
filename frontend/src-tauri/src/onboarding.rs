@@ -202,6 +202,10 @@ pub async fn complete_onboarding<R: Runtime>(
     }
     info!("Saved transcription model config: provider=parakeet, model={}", crate::config::DEFAULT_PARAKEET_MODEL);
 
+    if let Err(e) = crate::deployment_config::apply_deployment_config(&app, pool).await {
+        error!("Failed to apply deployment config during onboarding completion: {}", e);
+    }
+
     // Step 2: Only NOW mark onboarding as complete (after DB operations succeed)
     let mut status = load_onboarding_status(&app)
         .await

@@ -161,9 +161,10 @@ fn read_state<R: Runtime>(app: &AppHandle<R>) -> Result<StoredCalendarState, Str
         });
     }
 
-    let content = fs::read_to_string(path).map_err(|e| format!("Failed to read calendar settings: {}", e))?;
-    let mut state: StoredCalendarState =
-        serde_json::from_str(&content).map_err(|e| format!("Failed to parse calendar settings: {}", e))?;
+    let content =
+        fs::read_to_string(path).map_err(|e| format!("Failed to read calendar settings: {}", e))?;
+    let mut state: StoredCalendarState = serde_json::from_str(&content)
+        .map_err(|e| format!("Failed to parse calendar settings: {}", e))?;
     state.settings = normalize_settings(state.settings);
     Ok(state)
 }
@@ -173,6 +174,59 @@ fn write_state<R: Runtime>(app: &AppHandle<R>, state: &StoredCalendarState) -> R
     let content = serde_json::to_string_pretty(state)
         .map_err(|e| format!("Failed to serialize calendar settings: {}", e))?;
     fs::write(path, content).map_err(|e| format!("Failed to save calendar settings: {}", e))
+}
+
+pub fn default_calendar_scopes() -> &'static str {
+    DEFAULT_SCOPES
+}
+
+pub fn default_calendar_redirect_uri() -> &'static str {
+    "http://localhost"
+}
+
+fn reconcile_deployed_calendar_state(
+    mut state: StoredCalendarState,
+    deployed_settings: O365CalendarSettings,
+    managed: bool,
+) -> Result<(StoredCalendarState, bool), String> {
+    let deployed_settings = normalize_settings(deployed_settings);
+    require_settings(&deployed_settings)?;
+
+    let has_existing_client =
+        !state.settings.tenant_id.trim().is_empty() && !state.settings.client_id.trim().is_empty();
+    if !managed && has_existing_client {
+        return Ok((state, false));
+    }
+
+    let client_changed = state.settings.tenant_id.trim() != deployed_settings.tenant_id
+        || state.settings.client_id.trim() != deployed_settings.client_id;
+
+    state.settings = deployed_settings;
+
+    if managed && client_changed {
+        state.token = None;
+        state.pending_verifier = None;
+        state.pending_state = None;
+        state.pending_redirect_uri = None;
+        state.last_events.clear();
+    }
+
+    Ok((state, true))
+}
+
+pub fn apply_deployed_calendar_settings<R: Runtime>(
+    app: &AppHandle<R>,
+    deployed_settings: O365CalendarSettings,
+    managed: bool,
+) -> Result<bool, String> {
+    let state = read_state(app)?;
+    let (state, applied) = reconcile_deployed_calendar_state(state, deployed_settings, managed)?;
+
+    if applied {
+        write_state(app, &state)?;
+    }
+
+    Ok(applied)
 }
 
 fn random_token(len: usize) -> String {
@@ -257,12 +311,17 @@ fn validate_redirect_uri(redirect_uri: &str) -> Result<(), String> {
         );
     }
 
-    let parsed = Url::parse(normalized)
-        .map_err(|_| "Redirect URI must be a valid URL, for example http://localhost".to_string())?;
+    let parsed = Url::parse(normalized).map_err(|_| {
+        "Redirect URI must be a valid URL, for example http://localhost".to_string()
+    })?;
     let host = parsed.host_str().unwrap_or_default();
 
-    if parsed.scheme() != "http" || !(host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1") {
-        return Err("Redirect URI must be http://localhost or http://127.0.0.1 for this desktop app".to_string());
+    if parsed.scheme() != "http" || !(host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1")
+    {
+        return Err(
+            "Redirect URI must be http://localhost or http://127.0.0.1 for this desktop app"
+                .to_string(),
+        );
     }
 
     Ok(())
@@ -380,7 +439,11 @@ fn event_context(event: &O365CalendarEvent) -> String {
         lines.push(format!("Participants: {}", event.participants.join(", ")));
     }
 
-    if let Some(description) = event.description.as_ref().filter(|value| !value.trim().is_empty()) {
+    if let Some(description) = event
+        .description
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
         lines.push(format!("Description: {}", description.trim()));
     }
 
@@ -418,7 +481,9 @@ async fn exchange_refresh_token(
 
     Ok(O365CalendarToken {
         access_token: token.access_token,
-        refresh_token: token.refresh_token.or_else(|| Some(refresh_token.to_string())),
+        refresh_token: token
+            .refresh_token
+            .or_else(|| Some(refresh_token.to_string())),
         expires_at: Utc::now().timestamp() + token.expires_in.unwrap_or(3600) - 60,
     })
 }
@@ -456,7 +521,10 @@ async fn fetch_events_from_graph<R: Runtime>(
     let query = form_urlencoded::Serializer::new(String::new())
         .append_pair("startDateTime", &start.to_rfc3339())
         .append_pair("endDateTime", &end.to_rfc3339())
-        .append_pair("$select", "id,subject,bodyPreview,attendees,start,end,onlineMeeting,onlineMeetingUrl,webLink")
+        .append_pair(
+            "$select",
+            "id,subject,bodyPreview,attendees,start,end,onlineMeeting,onlineMeetingUrl,webLink",
+        )
         .append_pair("$orderby", "start/dateTime")
         .finish();
 
@@ -466,7 +534,10 @@ async fn fetch_events_from_graph<R: Runtime>(
         HeaderValue::from_str(&format!("Bearer {}", access_token))
             .map_err(|_| "Invalid calendar access token".to_string())?,
     );
-    headers.insert("Prefer", HeaderValue::from_static("outlook.timezone=\"UTC\""));
+    headers.insert(
+        "Prefer",
+        HeaderValue::from_static("outlook.timezone=\"UTC\""),
+    );
 
     let response = reqwest::Client::new()
         .get(format!("{}/me/calendarView?{}", GRAPH_BASE_URL, query))
@@ -493,7 +564,9 @@ async fn fetch_events_from_graph<R: Runtime>(
                 .into_iter()
                 .filter_map(|attendee| attendee.email_address)
                 .map(|email| match (email.name, email.address) {
-                    (Some(name), Some(address)) if !name.trim().is_empty() => format!("{} <{}>", name, address),
+                    (Some(name), Some(address)) if !name.trim().is_empty() => {
+                        format!("{} <{}>", name, address)
+                    }
                     (_, Some(address)) => address,
                     (Some(name), None) => name,
                     _ => String::new(),
@@ -503,7 +576,9 @@ async fn fetch_events_from_graph<R: Runtime>(
 
             O365CalendarEvent {
                 id: event.id,
-                title: event.subject.unwrap_or_else(|| "Untitled event".to_string()),
+                title: event
+                    .subject
+                    .unwrap_or_else(|| "Untitled event".to_string()),
                 join_url: event
                     .online_meeting
                     .and_then(|meeting| meeting.join_url)
@@ -562,7 +637,10 @@ async fn exchange_o365_redirect_url<R: Runtime>(
 
     if !response.status().is_success() {
         let body = response.text().await.unwrap_or_default();
-        return Err(format!("Microsoft authorization code exchange failed: {}", body));
+        return Err(format!(
+            "Microsoft authorization code exchange failed: {}",
+            body
+        ));
     }
 
     let token = response
@@ -813,8 +891,9 @@ pub async fn calendar_build_event_context(event: O365CalendarEvent) -> Result<St
 #[cfg(test)]
 mod tests {
     use super::{
-        exchange_redirect_uri, normalize_scopes, normalize_settings, parse_redirect_query, redirect_url_from_request,
-        validate_redirect_uri, O365CalendarSettings, StoredCalendarState, DEFAULT_SCOPES,
+        exchange_redirect_uri, normalize_scopes, normalize_settings, parse_redirect_query,
+        reconcile_deployed_calendar_state, redirect_url_from_request, validate_redirect_uri,
+        O365CalendarSettings, O365CalendarToken, StoredCalendarState, DEFAULT_SCOPES,
     };
 
     #[test]
@@ -854,13 +933,20 @@ mod tests {
 
     #[test]
     fn microsoft_auth_endpoints_are_not_valid_redirect_uris() {
-        assert!(validate_redirect_uri("https://login.microsoftonline.com/common/oauth2/v2.0/token").is_err());
-        assert!(validate_redirect_uri("https://login.microsoftonline.com/common/oauth2/v2.0/authorize").is_err());
+        assert!(validate_redirect_uri(
+            "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+        )
+        .is_err());
+        assert!(validate_redirect_uri(
+            "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
+        )
+        .is_err());
     }
 
     #[test]
     fn redirect_query_returns_code_and_state() {
-        let (code, state) = parse_redirect_query("http://localhost:49152/?code=abc123&state=state456").unwrap();
+        let (code, state) =
+            parse_redirect_query("http://localhost:49152/?code=abc123&state=state456").unwrap();
         assert_eq!(code, "abc123");
         assert_eq!(state, "state456");
     }
@@ -885,7 +971,10 @@ mod tests {
     fn loopback_request_reconstructs_redirect_url() {
         let request = "GET /?code=abc123&state=state456 HTTP/1.1\r\nHost: localhost:49152\r\n\r\n";
         let redirect_url = redirect_url_from_request(request, 49152).unwrap();
-        assert_eq!(redirect_url, "http://localhost:49152/?code=abc123&state=state456");
+        assert_eq!(
+            redirect_url,
+            "http://localhost:49152/?code=abc123&state=state456"
+        );
     }
 
     #[test]
@@ -900,5 +989,76 @@ mod tests {
         };
 
         assert_eq!(exchange_redirect_uri(&state), "http://localhost:49152");
+    }
+
+    #[test]
+    fn seed_calendar_config_does_not_replace_existing_client() {
+        let state = StoredCalendarState {
+            settings: O365CalendarSettings {
+                tenant_id: "existing-tenant".to_string(),
+                client_id: "existing-client".to_string(),
+                redirect_uri: "http://localhost".to_string(),
+                scopes: DEFAULT_SCOPES.to_string(),
+            },
+            ..Default::default()
+        };
+        let deployed = O365CalendarSettings {
+            tenant_id: "deployed-tenant".to_string(),
+            client_id: "deployed-client".to_string(),
+            redirect_uri: "http://localhost".to_string(),
+            scopes: DEFAULT_SCOPES.to_string(),
+        };
+
+        let (next, applied) = reconcile_deployed_calendar_state(state, deployed, false).unwrap();
+
+        assert!(!applied);
+        assert_eq!(next.settings.tenant_id, "existing-tenant");
+        assert_eq!(next.settings.client_id, "existing-client");
+    }
+
+    #[test]
+    fn managed_calendar_client_change_clears_auth_state() {
+        let state = StoredCalendarState {
+            settings: O365CalendarSettings {
+                tenant_id: "old-tenant".to_string(),
+                client_id: "old-client".to_string(),
+                redirect_uri: "http://localhost".to_string(),
+                scopes: DEFAULT_SCOPES.to_string(),
+            },
+            token: Some(O365CalendarToken {
+                access_token: "token".to_string(),
+                refresh_token: Some("refresh".to_string()),
+                expires_at: 123,
+            }),
+            pending_verifier: Some("verifier".to_string()),
+            pending_state: Some("state".to_string()),
+            pending_redirect_uri: Some("http://localhost:49152".to_string()),
+            last_events: vec![super::O365CalendarEvent {
+                id: "1".to_string(),
+                title: "event".to_string(),
+                join_url: None,
+                participants: Vec::new(),
+                description: None,
+                start: "2026-01-01T00:00:00".to_string(),
+                end: "2026-01-01T01:00:00".to_string(),
+                web_link: None,
+            }],
+        };
+        let deployed = O365CalendarSettings {
+            tenant_id: "new-tenant".to_string(),
+            client_id: "new-client".to_string(),
+            redirect_uri: "http://localhost".to_string(),
+            scopes: DEFAULT_SCOPES.to_string(),
+        };
+
+        let (next, applied) = reconcile_deployed_calendar_state(state, deployed, true).unwrap();
+
+        assert!(applied);
+        assert_eq!(next.settings.tenant_id, "new-tenant");
+        assert!(next.token.is_none());
+        assert!(next.pending_verifier.is_none());
+        assert!(next.pending_state.is_none());
+        assert!(next.pending_redirect_uri.is_none());
+        assert!(next.last_events.is_empty());
     }
 }

@@ -160,6 +160,10 @@ pub async fn import_and_initialize_database(
             format!("Failed to import database: {}", e)
         })?;
 
+    if let Err(e) = crate::deployment_config::apply_deployment_config(&app, db_manager.pool()).await {
+        error!("Failed to apply deployment config after database import: {}", e);
+    }
+
     // Update app state with the new manager
     app.manage(AppState { db_manager });
 
@@ -211,6 +215,10 @@ pub async fn initialize_fresh_database(app: AppHandle) -> Result<(), String> {
         crate::config::DEFAULT_PARAKEET_MODEL,
     ).await {
         error!("Failed to set default transcription model config: {}", e);
+    }
+
+    if let Err(e) = crate::deployment_config::apply_deployment_config(&app, pool).await {
+        error!("Failed to apply deployment config after fresh database initialization: {}", e);
     }
 
     info!("Fresh database initialized successfully with default models");
