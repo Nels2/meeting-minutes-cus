@@ -1,4 +1,4 @@
-import { Document, HeadingLevel, Packer, Paragraph, TextRun } from 'docx';
+import { AlignmentType, Document, HeadingLevel, Packer, Paragraph, TextRun } from 'docx';
 import { jsPDF } from 'jspdf';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
@@ -104,56 +104,239 @@ export function buildMeetingMarkdown(bundle: MeetingExportBundle): string {
   return `${lines.join('\n')}\n`;
 }
 
-function paragraphFromMarkdownLine(line: string): Paragraph {
-  if (line.startsWith('# ')) {
-    return new Paragraph({
-      text: line.replace(/^# /, ''),
-      heading: HeadingLevel.TITLE,
-    });
+type ParsedMarkdownBlock =
+  | { type: 'heading1' | 'heading2' | 'heading3'; text: string }
+  | { type: 'bullet'; text: string }
+  | { type: 'paragraph'; text: string };
+
+interface TranscriptExportRow {
+  timestamp: string;
+  speaker: string;
+  text: string;
+}
+
+function cleanInlineMarkdown(value: string): string {
+  return value
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/(\*\*|__|\*|_)/g, '')
+    .trim();
+}
+
+function parseMarkdownBlocks(markdown?: string): ParsedMarkdownBlock[] {
+  if (!markdown?.trim()) return [];
+  const blocks: ParsedMarkdownBlock[] = [];
+  const paragraphBuffer: string[] = [];
+
+  const flushParagraph = () => {
+    const text = cleanInlineMarkdown(paragraphBuffer.join(' '));
+    if (text) blocks.push({ type: 'paragraph', text });
+    paragraphBuffer.length = 0;
+  };
+
+  for (const rawLine of markdown.split('\n')) {
+    const line = rawLine.trim();
+
+    if (!line || line === '---') {
+      flushParagraph();
+      continue;
+    }
+
+    const heading = /^(#{1,3})\s+(.+)$/.exec(line);
+    if (heading) {
+      flushParagraph();
+      const depth = heading[1].length;
+      blocks.push({
+        type: depth === 1 ? 'heading1' : depth === 2 ? 'heading2' : 'heading3',
+        text: cleanInlineMarkdown(heading[2]),
+      });
+      continue;
+    }
+
+    const bullet = /^[-*]\s+(.+)$/.exec(line);
+    if (bullet) {
+      flushParagraph();
+      blocks.push({ type: 'bullet', text: cleanInlineMarkdown(bullet[1]) });
+      continue;
+    }
+
+    paragraphBuffer.push(line);
   }
 
-  if (line.startsWith('## ')) {
-    return new Paragraph({
-      text: line.replace(/^## /, ''),
-      heading: HeadingLevel.HEADING_1,
-      spacing: { before: 240, after: 120 },
-    });
+  flushParagraph();
+  return blocks;
+}
+
+function transcriptRows(bundle: MeetingExportBundle): TranscriptExportRow[] {
+  return bundle.transcripts.map(transcript => ({
+    timestamp: formatTranscriptTime(transcript.audio_start_time, transcript.timestamp),
+    speaker: transcript.speaker?.trim() || 'Speaker',
+    text: transcript.text.trim(),
+  })).filter(row => row.text.length > 0);
+}
+
+function inlineTextRuns(value: string, options: { size?: number; color?: string } = {}): TextRun[] {
+  const runs: TextRun[] = [];
+  const pattern = /(\*\*[^*]+\*\*|__[^_]+__)/g;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(value)) !== null) {
+    if (match.index > cursor) {
+      runs.push(new TextRun({
+        text: cleanInlineMarkdown(value.slice(cursor, match.index)),
+        size: options.size,
+        color: options.color,
+      }));
+    }
+
+    runs.push(new TextRun({
+      text: cleanInlineMarkdown(match[0]),
+      bold: true,
+      size: options.size,
+      color: options.color,
+    }));
+    cursor = match.index + match[0].length;
   }
 
-  if (line.startsWith('### ')) {
+  if (cursor < value.length) {
+    runs.push(new TextRun({
+      text: cleanInlineMarkdown(value.slice(cursor)),
+      size: options.size,
+      color: options.color,
+    }));
+  }
+
+  return runs.length ? runs : [new TextRun({ text: cleanInlineMarkdown(value), size: options.size, color: options.color })];
+}
+
+function sectionHeading(text: string): Paragraph {
+  return new Paragraph({
+    text,
+    heading: HeadingLevel.HEADING_1,
+    spacing: { before: 360, after: 160 },
+    thematicBreak: true,
+  });
+}
+
+function markdownBlockToDocxParagraph(block: ParsedMarkdownBlock): Paragraph {
+  if (block.type === 'heading1' || block.type === 'heading2') {
     return new Paragraph({
-      text: line.replace(/^### /, ''),
+      text: block.text,
       heading: HeadingLevel.HEADING_2,
-      spacing: { before: 180, after: 80 },
+      spacing: { before: 220, after: 90 },
     });
   }
 
-  if (line.startsWith('- ')) {
+  if (block.type === 'heading3') {
     return new Paragraph({
-      text: line.replace(/^- /, ''),
+      children: [new TextRun({ text: block.text, bold: true, size: 23, color: '334155' })],
+      spacing: { before: 160, after: 70 },
+    });
+  }
+
+  if (block.type === 'bullet') {
+    return new Paragraph({
+      children: inlineTextRuns(block.text, { size: 21, color: '1F2937' }),
       bullet: { level: 0 },
+      indent: { left: 420, hanging: 180 },
       spacing: { after: 80 },
     });
   }
 
   return new Paragraph({
-    children: [new TextRun(line.replace(/\*\*/g, ''))],
-    spacing: { after: 100 },
+    children: inlineTextRuns(block.text, { size: 21, color: '1F2937' }),
+    spacing: { after: 130 },
+    alignment: AlignmentType.LEFT,
   });
 }
 
-async function markdownToDocx(markdown: string): Promise<Uint8Array> {
-  const paragraphs = markdown
-    .split('\n')
-    .map(line => line.trimEnd())
-    .filter(line => line !== '---')
-    .map(paragraphFromMarkdownLine);
+async function bundleToDocx(bundle: MeetingExportBundle): Promise<Uint8Array> {
+  const children: Paragraph[] = [
+    new Paragraph({
+      text: bundle.title,
+      heading: HeadingLevel.TITLE,
+      spacing: { after: 180 },
+    }),
+    new Paragraph({
+      children: [
+        new TextRun({ text: 'Meeting ID: ', bold: true, color: '475569', size: 19 }),
+        new TextRun({ text: bundle.meetingId, color: '475569', size: 19 }),
+      ],
+      spacing: { after: 40 },
+    }),
+    new Paragraph({
+      children: [
+        new TextRun({ text: 'Created: ', bold: true, color: '475569', size: 19 }),
+        new TextRun({ text: formatDate(bundle.createdAt), color: '475569', size: 19 }),
+      ],
+      spacing: { after: 40 },
+    }),
+    new Paragraph({
+      children: [
+        new TextRun({ text: 'Exported: ', bold: true, color: '475569', size: 19 }),
+        new TextRun({ text: formatDate(new Date().toISOString()), color: '475569', size: 19 }),
+      ],
+      spacing: { after: 220 },
+    }),
+  ];
+
+  if (bundle.customContext?.trim()) {
+    children.push(
+      sectionHeading('Additional Context'),
+      new Paragraph({
+        children: inlineTextRuns(bundle.customContext.trim(), { size: 21, color: '1F2937' }),
+        spacing: { after: 140 },
+      })
+    );
+  }
+
+  const summaryBlocks = parseMarkdownBlocks(bundle.summaryMarkdown);
+  if (summaryBlocks.length) {
+    children.push(sectionHeading('Summary'), ...summaryBlocks.map(markdownBlockToDocxParagraph));
+  }
+
+  children.push(sectionHeading('Transcript'));
+  const rows = transcriptRows(bundle);
+  if (!rows.length) {
+    children.push(new Paragraph({
+      children: [new TextRun({ text: 'No transcript segments are available.', italics: true, color: '64748B' })],
+    }));
+  } else {
+    rows.forEach(row => {
+      children.push(new Paragraph({
+        children: [
+          new TextRun({ text: row.timestamp, bold: true, color: '2563EB', size: 18 }),
+          new TextRun({ text: `  ${row.speaker}: `, bold: true, color: '334155', size: 18 }),
+          new TextRun({ text: row.text, size: 20, color: '1F2937' }),
+        ],
+        spacing: { before: 90, after: 80 },
+      }));
+    });
+  }
 
   const document = new Document({
+    styles: {
+      default: {
+        document: {
+          run: { font: 'Aptos', size: 21, color: '1F2937' },
+          paragraph: { spacing: { line: 276 } },
+        },
+      },
+    },
     sections: [
       {
-        properties: {},
-        children: paragraphs,
+        properties: {
+          page: {
+            margin: {
+              top: 900,
+              right: 900,
+              bottom: 900,
+              left: 900,
+            },
+          },
+        },
+        children,
       },
     ],
   });
@@ -162,22 +345,16 @@ async function markdownToDocx(markdown: string): Promise<Uint8Array> {
   return new Uint8Array(await blob.arrayBuffer());
 }
 
-function markdownToPdf(markdown: string): Uint8Array {
+function bundleToPdf(bundle: MeetingExportBundle): Uint8Array {
   const pdf = new jsPDF({ unit: 'pt', format: 'letter' });
   const pageWidth = pdf.internal.pageSize.getWidth();
   const pageHeight = pdf.internal.pageSize.getHeight();
   const marginX = 54;
-  const marginTop = 58;
-  const marginBottom = 54;
+  const marginTop = 54;
+  const marginBottom = 60;
   const maxWidth = pageWidth - marginX * 2;
   let y = marginTop;
   let pageNumber = 1;
-
-  const cleanInlineMarkdown = (value: string) =>
-    value
-      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)')
-      .replace(/(\*\*|__|\*|_|`)/g, '')
-      .trimEnd();
 
   const drawFooter = () => {
     pdf.setFont('helvetica', 'normal');
@@ -189,23 +366,85 @@ function markdownToPdf(markdown: string): Uint8Array {
     pdf.text(`Page ${pageNumber}`, pageWidth - marginX, pageHeight - 22, { align: 'right' });
   };
 
-  const addPageIfNeeded = (height: number) => {
+  const addPage = () => {
+    drawFooter();
+    pdf.addPage();
+    pageNumber += 1;
+    y = marginTop;
+  };
+
+  const remainingPageHeight = () => pageHeight - marginBottom - y;
+
+  const ensureSpace = (height: number) => {
     if (y + height > pageHeight - marginBottom) {
-      drawFooter();
-      pdf.addPage();
-      pageNumber += 1;
-      y = marginTop;
+      addPage();
     }
   };
 
-  const writeWrappedText = (
+  const splitLines = (text: string, width: number): string[] => pdf.splitTextToSize(text, width) as string[];
+
+  const drawRule = (offsetY = 0) => {
+    pdf.setDrawColor(226, 232, 240);
+    pdf.setLineWidth(0.6);
+    pdf.line(marginX, y + offsetY, pageWidth - marginX, y + offsetY);
+  };
+
+  const drawWrappedLines = (
+    lines: string[],
+    options: {
+      x?: number;
+      fontSize?: number;
+      lineHeight?: number;
+      fontStyle?: 'normal' | 'bold' | 'italic';
+      color?: [number, number, number];
+      after?: number;
+      firstLinePrefix?: string;
+      prefixWidth?: number;
+    } = {}
+  ) => {
+    const fontSize = options.fontSize ?? 10;
+    const lineHeight = options.lineHeight ?? 14.5;
+    const x = options.x ?? marginX;
+    const after = options.after ?? 0;
+    let index = 0;
+
+    pdf.setFont('helvetica', options.fontStyle ?? 'normal');
+    pdf.setFontSize(fontSize);
+    pdf.setTextColor(...(options.color ?? [31, 41, 55]));
+
+    while (index < lines.length) {
+      if (remainingPageHeight() < lineHeight) {
+        addPage();
+      }
+
+      const availableLines = Math.max(1, Math.floor(remainingPageHeight() / lineHeight));
+      const chunk = lines.slice(index, index + availableLines);
+
+      if (options.firstLinePrefix && index === 0) {
+        pdf.text(options.firstLinePrefix, x, y);
+        pdf.text(chunk[0], x + (options.prefixWidth ?? 0), y);
+        if (chunk.length > 1) {
+          pdf.text(chunk.slice(1), x, y + lineHeight);
+        }
+      } else {
+        pdf.text(chunk, x, y);
+      }
+
+      y += chunk.length * lineHeight;
+      index += chunk.length;
+    }
+
+    y += after;
+  };
+
+  const drawTextBlock = (
     text: string,
     options: {
       x?: number;
       width?: number;
       fontSize?: number;
       lineHeight?: number;
-      fontStyle?: 'normal' | 'bold';
+      fontStyle?: 'normal' | 'bold' | 'italic';
       color?: [number, number, number];
       after?: number;
     } = {}
@@ -214,109 +453,187 @@ function markdownToPdf(markdown: string): Uint8Array {
     const lineHeight = options.lineHeight ?? 15;
     const x = options.x ?? marginX;
     const width = options.width ?? maxWidth;
-    const wrapped = pdf.splitTextToSize(text, width) as string[];
-
-    addPageIfNeeded(wrapped.length * lineHeight);
-    pdf.setFont('helvetica', options.fontStyle ?? 'normal');
-    pdf.setFontSize(fontSize);
-    pdf.setTextColor(...(options.color ?? [31, 41, 55]));
-    pdf.text(wrapped, x, y);
-    y += wrapped.length * lineHeight + (options.after ?? 4);
+    const wrapped = splitLines(text, width);
+    drawWrappedLines(wrapped, {
+      x,
+      fontSize,
+      lineHeight,
+      fontStyle: options.fontStyle,
+      color: options.color,
+      after: options.after ?? 4,
+    });
   };
 
-  const lines = markdown.split('\n');
-  for (const rawLine of lines) {
-    const line = cleanInlineMarkdown(rawLine);
+  const drawSectionHeading = (heading: string) => {
+    ensureSpace(42);
+    if (y > marginTop + 6) y += 10;
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(13);
+    pdf.setTextColor(15, 23, 42);
+    pdf.text(heading, marginX, y);
+    y += 7;
+    pdf.setDrawColor(203, 213, 225);
+    pdf.setLineWidth(0.7);
+    pdf.line(marginX, y, pageWidth - marginX, y);
+    y += 15;
+  };
 
-    if (line === '---') continue;
-    if (!line.trim()) {
-      y += 7;
-      continue;
+  const drawBullet = (text: string) => {
+    const bulletX = marginX + 4;
+    const textX = marginX + 18;
+    const width = maxWidth - 18;
+    const wrapped = splitLines(text, width);
+    ensureSpace(Math.min(30, wrapped.length * 14 + 6));
+
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(9.8);
+    pdf.setTextColor(37, 99, 235);
+    pdf.text('-', bulletX, y);
+
+    drawWrappedLines(wrapped, {
+      x: textX,
+      fontSize: 10,
+      lineHeight: 14.2,
+      color: [31, 41, 55],
+      after: 5,
+    });
+  };
+
+  const drawSummaryBlock = (block: ParsedMarkdownBlock) => {
+    if (block.type === 'heading1' || block.type === 'heading2') {
+      ensureSpace(30);
+      drawTextBlock(block.text, {
+        fontSize: 11.5,
+        lineHeight: 15.5,
+        fontStyle: 'bold',
+        color: [30, 64, 175],
+        after: 7,
+      });
+      return;
     }
 
-    if (line.startsWith('# ')) {
-      const title = line.replace(/^#\s+/, '');
-      const titleLines = pdf.splitTextToSize(title, maxWidth) as string[];
-      addPageIfNeeded(48);
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(22);
-      pdf.setTextColor(15, 23, 42);
-      pdf.text(titleLines, marginX, y);
-      y += titleLines.length * 28;
-      pdf.setDrawColor(37, 99, 235);
-      pdf.setLineWidth(1.2);
-      pdf.line(marginX, y, pageWidth - marginX, y);
-      y += 18;
-      continue;
-    }
-
-    if (line.startsWith('## ')) {
-      const heading = line.replace(/^##\s+/, '');
-      addPageIfNeeded(42);
-      y += 6;
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(14);
-      pdf.setTextColor(29, 78, 216);
-      pdf.text(heading, marginX, y);
-      y += 10;
-      pdf.setDrawColor(226, 232, 240);
-      pdf.setLineWidth(0.6);
-      pdf.line(marginX, y, pageWidth - marginX, y);
-      y += 14;
-      continue;
-    }
-
-    if (line.startsWith('### ')) {
-      writeWrappedText(line.replace(/^###\s+/, ''), {
-        fontSize: 12,
-        lineHeight: 16,
+    if (block.type === 'heading3') {
+      ensureSpace(26);
+      drawTextBlock(block.text, {
+        fontSize: 10.5,
+        lineHeight: 14,
         fontStyle: 'bold',
         color: [51, 65, 85],
         after: 6,
       });
-      continue;
+      return;
     }
 
-    if (line.startsWith('- ')) {
-      const bulletText = line.replace(/^-+\s*/, '');
-      const bulletX = marginX + 8;
-      const textX = marginX + 22;
-      const width = maxWidth - 22;
-      const wrapped = pdf.splitTextToSize(bulletText, width) as string[];
-      addPageIfNeeded(wrapped.length * 14 + 4);
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(10);
-      pdf.setTextColor(37, 99, 235);
-      pdf.text('-', bulletX, y);
+    if (block.type === 'bullet') {
+      drawBullet(block.text);
+      return;
+    }
+
+    drawTextBlock(block.text, { fontSize: 10.2, lineHeight: 14.5, after: 8 });
+  };
+
+  const drawTranscriptRow = (row: TranscriptExportRow) => {
+    const labelWidth = 112;
+    const gap = 14;
+    const textX = marginX + labelWidth + gap;
+    const textWidth = maxWidth - labelWidth - gap;
+    const labelLines = splitLines(`${row.timestamp}\n${row.speaker}`, labelWidth);
+    const textLines = splitLines(row.text, textWidth);
+    const lineHeight = 13.5;
+    const labelHeight = labelLines.length * 11.5;
+    const firstBlockHeight = Math.max(labelHeight, Math.min(textLines.length, 3) * lineHeight);
+
+    ensureSpace(Math.max(28, firstBlockHeight + 8));
+
+    const entryTop = y;
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(8.5);
+    pdf.setTextColor(37, 99, 235);
+    pdf.text(labelLines[0] ?? row.timestamp, marginX, y);
+
+    if (labelLines.length > 1) {
       pdf.setFont('helvetica', 'normal');
-      pdf.setFontSize(10.5);
-      pdf.setTextColor(31, 41, 55);
-      pdf.text(wrapped, textX, y);
-      y += wrapped.length * 14 + 4;
-      continue;
+      pdf.setTextColor(71, 85, 105);
+      pdf.text(labelLines.slice(1), marginX, y + 11.5);
     }
 
-    if (/^Meeting ID:|^Created:|^Exported:/.test(line)) {
-      writeWrappedText(line, {
-        fontSize: 9.5,
-        lineHeight: 13,
-        color: [100, 116, 139],
-        after: 2,
-      });
-      continue;
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(9.5);
+    pdf.setTextColor(31, 41, 55);
+
+    let index = 0;
+    while (index < textLines.length) {
+      if (remainingPageHeight() < lineHeight) {
+        addPage();
+      }
+
+      const availableLines = Math.max(1, Math.floor(remainingPageHeight() / lineHeight));
+      const chunk = textLines.slice(index, index + availableLines);
+      pdf.text(chunk, textX, y);
+      y += chunk.length * lineHeight;
+      index += chunk.length;
     }
 
-    if (/^\[[0-9]{2}:[0-9]{2}\]/.test(line)) {
-      writeWrappedText(line, {
-        fontSize: 9.5,
-        lineHeight: 13,
-        color: [51, 65, 85],
-        after: 3,
-      });
-      continue;
-    }
+    y = Math.max(y, entryTop + labelHeight);
+    y += 9;
+    drawRule();
+    y += 9;
+  };
 
-    writeWrappedText(line);
+  const titleLines = splitLines(bundle.title, maxWidth);
+  pdf.setFont('helvetica', 'bold');
+  pdf.setFontSize(21);
+  pdf.setTextColor(15, 23, 42);
+  pdf.text(titleLines, marginX, y);
+  y += titleLines.length * 25 + 10;
+  pdf.setDrawColor(37, 99, 235);
+  pdf.setLineWidth(1);
+  pdf.line(marginX, y, pageWidth - marginX, y);
+  y += 18;
+
+  [
+    ['Meeting ID', bundle.meetingId],
+    ['Created', formatDate(bundle.createdAt)],
+    ['Exported', formatDate(new Date().toISOString())],
+  ].forEach(([label, value]) => {
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(8.7);
+    pdf.setTextColor(71, 85, 105);
+    pdf.text(`${label}:`, marginX, y);
+    pdf.setFont('helvetica', 'normal');
+    const valueLines = splitLines(value, maxWidth - 68);
+    pdf.text(valueLines, marginX + 68, y);
+    y += Math.max(13, valueLines.length * 11.5);
+  });
+  y += 10;
+
+  if (bundle.customContext?.trim()) {
+    drawSectionHeading('Additional Context');
+    drawTextBlock(bundle.customContext.trim(), {
+      fontSize: 10.2,
+      lineHeight: 14.5,
+      after: 10,
+    });
+  }
+
+  const summaryBlocks = parseMarkdownBlocks(bundle.summaryMarkdown);
+  if (summaryBlocks.length) {
+    drawSectionHeading('Summary');
+    summaryBlocks.forEach(drawSummaryBlock);
+  }
+
+  drawSectionHeading('Transcript');
+  const rows = transcriptRows(bundle);
+  if (!rows.length) {
+    drawTextBlock('No transcript segments are available.', {
+      fontSize: 10.2,
+      lineHeight: 14,
+      color: [100, 116, 139],
+      fontStyle: 'italic',
+      after: 8,
+    });
+  } else {
+    rows.forEach(drawTranscriptRow);
   }
 
   drawFooter();
@@ -344,9 +661,9 @@ export async function exportMeetingBundle(format: MeetingExportFormat, bundle: M
   if (format === 'markdown') {
     await writeExportFile(filePath, new TextEncoder().encode(markdown));
   } else if (format === 'docx') {
-    await writeExportFile(filePath, await markdownToDocx(markdown));
+    await writeExportFile(filePath, await bundleToDocx(bundle));
   } else {
-    await writeExportFile(filePath, markdownToPdf(markdown));
+    await writeExportFile(filePath, bundleToPdf(bundle));
   }
 
   return filePath;
