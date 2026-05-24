@@ -53,6 +53,7 @@ struct TranscriptionDeploymentConfig {
     mode: DeploymentMode,
     provider: Option<String>,
     model: Option<String>,
+    api_key: Option<String>,
     api_key_env: Option<String>,
     custom_openai: Option<TranscriptCustomOpenAIDeploymentConfig>,
 }
@@ -139,6 +140,21 @@ fn validate_transcription_provider(provider: &str) -> Result<(), String> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApiKeySource {
+    Env,
+    Json,
+    Existing,
+    Missing,
+}
+
+fn provider_uses_api_key(provider: &str) -> bool {
+    matches!(
+        provider,
+        "localWhisper" | "custom-openai" | "deepgram" | "elevenLabs" | "groq" | "openai"
+    )
+}
+
 fn resolve_api_key_from_env(api_key_env: Option<&str>) -> Option<String> {
     let name = api_key_env?.trim();
     if name.is_empty() {
@@ -155,6 +171,20 @@ fn resolve_api_key_from_env(api_key_env: Option<&str>) -> Option<String> {
             None
         }
     }
+}
+
+fn resolve_deployed_api_key(
+    api_key_env: Option<&str>,
+    api_key: Option<&str>,
+) -> Option<(String, ApiKeySource)> {
+    resolve_api_key_from_env(api_key_env)
+        .map(|key| (key, ApiKeySource::Env))
+        .or_else(|| {
+            api_key
+                .map(str::trim)
+                .filter(|key| !key.is_empty())
+                .map(|key| (key.to_string(), ApiKeySource::Json))
+        })
 }
 
 async fn apply_calendar<R: Runtime>(
@@ -208,7 +238,8 @@ async fn apply_transcription(
         .await
         .map_err(|e| format!("Failed to save deployed transcription config: {}", e))?;
 
-    let deployed_api_key = resolve_api_key_from_env(config.api_key_env.as_deref());
+    let deployed_api_key =
+        resolve_deployed_api_key(config.api_key_env.as_deref(), config.api_key.as_deref());
 
     if provider == "custom-openai" {
         let existing_custom = SettingsRepository::get_transcript_custom_openai_config(pool)
@@ -216,13 +247,23 @@ async fn apply_transcription(
             .map_err(|e| format!("Failed to read existing custom transcription config: {}", e))?;
         let custom = config.custom_openai.as_ref().expect("checked above");
         let endpoint = required_trimmed(&custom.endpoint, "transcription.customOpenAI.endpoint")?;
+        let existing_api_key = existing_custom.as_ref().and_then(|cfg| cfg.api_key.clone());
+        let (api_key, api_key_source) = match deployed_api_key {
+            Some((api_key, source)) => (Some(api_key), source),
+            None if existing_api_key.is_some() => (existing_api_key, ApiKeySource::Existing),
+            None => (None, ApiKeySource::Missing),
+        };
+        log::info!(
+            "Using transcription API key source for provider '{}': {:?}",
+            provider,
+            api_key_source
+        );
 
         SettingsRepository::save_transcript_custom_openai_config(
             pool,
             &CustomOpenAIConfig {
                 endpoint,
-                api_key: deployed_api_key
-                    .or_else(|| existing_custom.as_ref().and_then(|cfg| cfg.api_key.clone())),
+                api_key,
                 model,
                 max_tokens: existing_custom.as_ref().and_then(|cfg| cfg.max_tokens),
                 temperature: existing_custom.as_ref().and_then(|cfg| cfg.temperature),
@@ -245,10 +286,42 @@ async fn apply_transcription(
         )
         .await
         .map_err(|e| format!("Failed to save deployed custom transcription config: {}", e))?;
-    } else if let Some(api_key) = deployed_api_key {
-        SettingsRepository::save_transcript_api_key(pool, &provider, &api_key)
-            .await
-            .map_err(|e| format!("Failed to save deployed transcription API key: {}", e))?;
+    } else if provider_uses_api_key(&provider) {
+        if let Some((api_key, api_key_source)) = deployed_api_key {
+            SettingsRepository::save_transcript_api_key(pool, &provider, &api_key)
+                .await
+                .map_err(|e| format!("Failed to save deployed transcription API key: {}", e))?;
+            log::info!(
+                "Using transcription API key source for provider '{}': {:?}",
+                provider,
+                api_key_source
+            );
+        } else {
+            let existing_api_key = SettingsRepository::get_transcript_api_key(pool, &provider)
+                .await
+                .map_err(|e| format!("Failed to read existing transcription API key: {}", e))?;
+            log::info!(
+                "Using transcription API key source for provider '{}': {:?}",
+                provider,
+                if existing_api_key.is_some() {
+                    ApiKeySource::Existing
+                } else {
+                    ApiKeySource::Missing
+                }
+            );
+        }
+    } else if let Some((_, api_key_source)) = deployed_api_key {
+        log::info!(
+            "Ignoring transcription API key source for provider '{}': {:?}",
+            provider,
+            api_key_source
+        );
+    } else {
+        log::info!(
+            "Using transcription API key source for provider '{}': {:?}",
+            provider,
+            ApiKeySource::Missing
+        );
     }
 
     log::info!(
@@ -280,7 +353,10 @@ pub async fn apply_deployment_config<R: Runtime>(
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_api_key_from_env, should_apply_transcription, DeploymentMode};
+    use super::{
+        provider_uses_api_key, resolve_api_key_from_env, resolve_deployed_api_key,
+        should_apply_transcription, ApiKeySource, DeploymentMode,
+    };
     use crate::database::models::TranscriptSetting;
 
     fn transcript_setting(provider: &str, model: &str) -> TranscriptSetting {
@@ -351,5 +427,47 @@ mod tests {
         );
 
         std::env::remove_var("MEETILY_TEST_PRESENT_KEY");
+    }
+
+    #[test]
+    fn env_api_key_wins_over_json_api_key() {
+        std::env::set_var("MEETILY_TEST_ENV_WINS_KEY", "  env-key  ");
+
+        assert_eq!(
+            resolve_deployed_api_key(Some("MEETILY_TEST_ENV_WINS_KEY"), Some("json-key")),
+            Some(("env-key".to_string(), ApiKeySource::Env))
+        );
+
+        std::env::remove_var("MEETILY_TEST_ENV_WINS_KEY");
+    }
+
+    #[test]
+    fn json_api_key_is_used_when_env_is_missing() {
+        std::env::remove_var("MEETILY_TEST_JSON_FALLBACK_KEY");
+
+        assert_eq!(
+            resolve_deployed_api_key(Some("MEETILY_TEST_JSON_FALLBACK_KEY"), Some("  json-key  ")),
+            Some(("json-key".to_string(), ApiKeySource::Json))
+        );
+    }
+
+    #[test]
+    fn blank_json_api_key_preserves_existing_api_key() {
+        std::env::remove_var("MEETILY_TEST_BLANK_JSON_KEY");
+
+        assert_eq!(
+            resolve_deployed_api_key(Some("MEETILY_TEST_BLANK_JSON_KEY"), Some("   ")),
+            None
+        );
+        assert_eq!(resolve_deployed_api_key(None, Some("   ")), None);
+    }
+
+    #[test]
+    fn parakeet_does_not_use_deployed_api_keys() {
+        assert!(!provider_uses_api_key("parakeet"));
+        assert_eq!(
+            resolve_deployed_api_key(None, Some("json-key")),
+            Some(("json-key".to_string(), ApiKeySource::Json))
+        );
     }
 }
