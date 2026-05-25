@@ -1,4 +1,18 @@
-import { AlignmentType, Document, HeadingLevel, Packer, Paragraph, TextRun } from 'docx';
+import {
+  AlignmentType,
+  BorderStyle,
+  Document,
+  HeadingLevel,
+  Packer,
+  Paragraph,
+  ShadingType,
+  Table,
+  TableCell,
+  TableLayoutType,
+  TableRow,
+  TextRun,
+  WidthType,
+} from 'docx';
 import { jsPDF } from 'jspdf';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
@@ -107,6 +121,7 @@ export function buildMeetingMarkdown(bundle: MeetingExportBundle): string {
 type ParsedMarkdownBlock =
   | { type: 'heading1' | 'heading2' | 'heading3'; text: string }
   | { type: 'bullet'; text: string }
+  | { type: 'table'; headers: string[]; rows: string[][] }
   | { type: 'paragraph'; text: string };
 
 interface TranscriptExportRow {
@@ -123,10 +138,36 @@ function cleanInlineMarkdown(value: string): string {
     .trim();
 }
 
+function isMarkdownTableRow(line: string): boolean {
+  return /^\s*\|.*\|\s*$/.test(line);
+}
+
+function isMarkdownTableSeparator(line: string): boolean {
+  if (!isMarkdownTableRow(line)) return false;
+  const cells = splitMarkdownTableRow(line);
+  return cells.length > 0 && cells.every(cell => /^:?-{3,}:?$/.test(cell.replace(/\s+/g, '')));
+}
+
+function splitMarkdownTableRow(line: string): string[] {
+  return line
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map(cell => cleanInlineMarkdown(cell));
+}
+
+function normalizeTableRow(cells: string[], columnCount: number): string[] {
+  if (cells.length === columnCount) return cells;
+  if (cells.length > columnCount) return cells.slice(0, columnCount);
+  return [...cells, ...Array.from({ length: columnCount - cells.length }, () => '')];
+}
+
 function parseMarkdownBlocks(markdown?: string): ParsedMarkdownBlock[] {
   if (!markdown?.trim()) return [];
   const blocks: ParsedMarkdownBlock[] = [];
   const paragraphBuffer: string[] = [];
+  const lines = markdown.split('\n');
 
   const flushParagraph = () => {
     const text = cleanInlineMarkdown(paragraphBuffer.join(' '));
@@ -134,7 +175,8 @@ function parseMarkdownBlocks(markdown?: string): ParsedMarkdownBlock[] {
     paragraphBuffer.length = 0;
   };
 
-  for (const rawLine of markdown.split('\n')) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const rawLine = lines[index];
     const line = rawLine.trim();
 
     if (!line || line === '---') {
@@ -157,6 +199,35 @@ function parseMarkdownBlocks(markdown?: string): ParsedMarkdownBlock[] {
     if (bullet) {
       flushParagraph();
       blocks.push({ type: 'bullet', text: cleanInlineMarkdown(bullet[1]) });
+      continue;
+    }
+
+    const nextLine = lines[index + 1]?.trim() ?? '';
+    if (isMarkdownTableRow(line) && isMarkdownTableSeparator(nextLine)) {
+      flushParagraph();
+      const headers = splitMarkdownTableRow(line);
+      const columnCount = headers.length;
+      const rows: string[][] = [];
+      index += 2;
+
+      while (index < lines.length) {
+        const rowLine = lines[index].trim();
+        if (!isMarkdownTableRow(rowLine) || isMarkdownTableSeparator(rowLine)) {
+          index -= 1;
+          break;
+        }
+
+        rows.push(normalizeTableRow(splitMarkdownTableRow(rowLine), columnCount));
+        index += 1;
+      }
+
+      if (columnCount > 0) {
+        blocks.push({
+          type: 'table',
+          headers,
+          rows,
+        });
+      }
       continue;
     }
 
@@ -219,40 +290,98 @@ function sectionHeading(text: string): Paragraph {
   });
 }
 
-function markdownBlockToDocxParagraph(block: ParsedMarkdownBlock): Paragraph {
+const docxTableBorders = {
+  top: { style: BorderStyle.SINGLE, size: 1, color: 'CBD5E1' },
+  bottom: { style: BorderStyle.SINGLE, size: 1, color: 'CBD5E1' },
+  left: { style: BorderStyle.SINGLE, size: 1, color: 'CBD5E1' },
+  right: { style: BorderStyle.SINGLE, size: 1, color: 'CBD5E1' },
+  insideHorizontal: { style: BorderStyle.SINGLE, size: 1, color: 'E2E8F0' },
+  insideVertical: { style: BorderStyle.SINGLE, size: 1, color: 'E2E8F0' },
+};
+
+function tableCellParagraph(text: string, bold = false): Paragraph {
+  return new Paragraph({
+    children: [new TextRun({
+      text: cleanInlineMarkdown(text) || ' ',
+      bold,
+      size: 18,
+      color: bold ? '0F172A' : '1F2937',
+    })],
+    spacing: { after: 0, line: 230 },
+  });
+}
+
+function markdownTableToDocxTable(block: Extract<ParsedMarkdownBlock, { type: 'table' }>): Table {
+  const columnCount = Math.max(1, block.headers.length);
+  const columnWidth = Math.floor(100 / columnCount);
+  const cellWidth = { size: columnWidth, type: WidthType.PERCENTAGE };
+
+  const makeCell = (text: string, header = false) => new TableCell({
+    width: cellWidth,
+    margins: { top: 90, bottom: 90, left: 100, right: 100 },
+    shading: header
+      ? { type: ShadingType.CLEAR, fill: 'F1F5F9', color: 'auto' }
+      : undefined,
+    children: [tableCellParagraph(text, header)],
+  });
+
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    layout: TableLayoutType.FIXED,
+    borders: docxTableBorders,
+    rows: [
+      new TableRow({
+        tableHeader: true,
+        children: block.headers.map(header => makeCell(header, true)),
+      }),
+      ...block.rows.map(row => new TableRow({
+        children: normalizeTableRow(row, columnCount).map(cell => makeCell(cell)),
+      })),
+    ],
+  });
+}
+
+function markdownBlockToDocxElements(block: ParsedMarkdownBlock): (Paragraph | Table)[] {
   if (block.type === 'heading1' || block.type === 'heading2') {
-    return new Paragraph({
+    return [new Paragraph({
       text: block.text,
       heading: HeadingLevel.HEADING_2,
       spacing: { before: 220, after: 90 },
-    });
+    })];
   }
 
   if (block.type === 'heading3') {
-    return new Paragraph({
+    return [new Paragraph({
       children: [new TextRun({ text: block.text, bold: true, size: 23, color: '334155' })],
       spacing: { before: 160, after: 70 },
-    });
+    })];
   }
 
   if (block.type === 'bullet') {
-    return new Paragraph({
+    return [new Paragraph({
       children: inlineTextRuns(block.text, { size: 21, color: '1F2937' }),
       bullet: { level: 0 },
       indent: { left: 420, hanging: 180 },
       spacing: { after: 80 },
-    });
+    })];
   }
 
-  return new Paragraph({
+  if (block.type === 'table') {
+    return [
+      markdownTableToDocxTable(block),
+      new Paragraph({ text: '', spacing: { after: 140 } }),
+    ];
+  }
+
+  return [new Paragraph({
     children: inlineTextRuns(block.text, { size: 21, color: '1F2937' }),
     spacing: { after: 130 },
     alignment: AlignmentType.LEFT,
-  });
+  })];
 }
 
 async function bundleToDocx(bundle: MeetingExportBundle): Promise<Uint8Array> {
-  const children: Paragraph[] = [
+  const children: (Paragraph | Table)[] = [
     new Paragraph({
       text: bundle.title,
       heading: HeadingLevel.TITLE,
@@ -293,7 +422,8 @@ async function bundleToDocx(bundle: MeetingExportBundle): Promise<Uint8Array> {
 
   const summaryBlocks = parseMarkdownBlocks(bundle.summaryMarkdown);
   if (summaryBlocks.length) {
-    children.push(sectionHeading('Summary'), ...summaryBlocks.map(markdownBlockToDocxParagraph));
+    children.push(sectionHeading('Summary'));
+    summaryBlocks.forEach(block => children.push(...markdownBlockToDocxElements(block)));
   }
 
   children.push(sectionHeading('Transcript'));
@@ -499,6 +629,80 @@ function bundleToPdf(bundle: MeetingExportBundle): Uint8Array {
     });
   };
 
+  const tableColumnWidths = (columnCount: number): number[] => {
+    if (columnCount === 1) return [maxWidth];
+    if (columnCount === 2) return [maxWidth * 0.55, maxWidth * 0.45];
+    if (columnCount === 3) return [maxWidth * 0.46, maxWidth * 0.22, maxWidth * 0.32];
+    if (columnCount === 4) return [maxWidth * 0.4, maxWidth * 0.2, maxWidth * 0.2, maxWidth * 0.2];
+
+    const width = maxWidth / columnCount;
+    return Array.from({ length: columnCount }, () => width);
+  };
+
+  const drawTableRow = (
+    cells: string[],
+    columnWidths: number[],
+    options: { header?: boolean; forceNewPage?: () => void } = {}
+  ) => {
+    const paddingX = 5;
+    const paddingY = options.header ? 7 : 6;
+    const fontSize = options.header ? 8 : 7.6;
+    const lineHeight = options.header ? 11.5 : 10.8;
+    const wrappedCells = cells.map((cell, index) => splitLines(cell || ' ', columnWidths[index] - paddingX * 2));
+    const rowHeight = Math.max(
+      options.header ? 24 : 22,
+      Math.max(...wrappedCells.map(lines => lines.length)) * lineHeight + paddingY * 2
+    );
+
+    if (y + rowHeight > pageHeight - marginBottom) {
+      if (options.forceNewPage) {
+        options.forceNewPage();
+      } else {
+        addPage();
+      }
+    }
+
+    const rowTop = y;
+    let x = marginX;
+
+    cells.forEach((_, index) => {
+      const width = columnWidths[index];
+      pdf.setFillColor(...(options.header ? [241, 245, 249] as [number, number, number] : [255, 255, 255] as [number, number, number]));
+      pdf.setDrawColor(203, 213, 225);
+      pdf.setLineWidth(0.4);
+      pdf.rect(x, rowTop, width, rowHeight, 'FD');
+
+      pdf.setFont('helvetica', options.header ? 'bold' : 'normal');
+      pdf.setFontSize(fontSize);
+      pdf.setTextColor(...(options.header ? [15, 23, 42] as [number, number, number] : [31, 41, 55] as [number, number, number]));
+      pdf.text(wrappedCells[index], x + paddingX, rowTop + paddingY + fontSize - 1);
+      x += width;
+    });
+
+    y += rowHeight;
+  };
+
+  const drawMarkdownTable = (block: Extract<ParsedMarkdownBlock, { type: 'table' }>) => {
+    const columnCount = Math.max(1, block.headers.length);
+    const columnWidths = tableColumnWidths(columnCount);
+    const headerCells = normalizeTableRow(block.headers, columnCount);
+
+    const drawHeader = () => drawTableRow(headerCells, columnWidths, { header: true });
+    const addPageWithHeader = () => {
+      addPage();
+      drawHeader();
+    };
+
+    ensureSpace(48);
+    drawHeader();
+    block.rows.forEach(row => {
+      drawTableRow(normalizeTableRow(row, columnCount), columnWidths, {
+        forceNewPage: addPageWithHeader,
+      });
+    });
+    y += 12;
+  };
+
   const drawSummaryBlock = (block: ParsedMarkdownBlock) => {
     if (block.type === 'heading1' || block.type === 'heading2') {
       ensureSpace(30);
@@ -526,6 +730,11 @@ function bundleToPdf(bundle: MeetingExportBundle): Uint8Array {
 
     if (block.type === 'bullet') {
       drawBullet(block.text);
+      return;
+    }
+
+    if (block.type === 'table') {
+      drawMarkdownTable(block);
       return;
     }
 
