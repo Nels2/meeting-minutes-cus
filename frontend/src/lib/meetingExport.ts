@@ -511,7 +511,74 @@ function bundleToPdf(bundle: MeetingExportBundle): Uint8Array {
     }
   };
 
-  const splitLines = (text: string, width: number): string[] => pdf.splitTextToSize(text, width) as string[];
+  const splitLines = (
+    text: string,
+    width: number,
+    options: { fontSize?: number; fontStyle?: 'normal' | 'bold' | 'italic' } = {}
+  ): string[] => {
+    if (options.fontStyle || options.fontSize) {
+      pdf.setFont('helvetica', options.fontStyle ?? 'normal');
+      pdf.setFontSize(options.fontSize ?? 10);
+    }
+
+    const breakLongToken = (token: string): string[] => {
+      if (pdf.getTextWidth(token) <= width) return [token];
+
+      const chunks: string[] = [];
+      let remaining = token;
+
+      while (remaining.length > 0) {
+        let low = 1;
+        let high = remaining.length;
+        let best = 1;
+
+        while (low <= high) {
+          const mid = Math.floor((low + high) / 2);
+          if (pdf.getTextWidth(remaining.slice(0, mid)) <= width) {
+            best = mid;
+            low = mid + 1;
+          } else {
+            high = mid - 1;
+          }
+        }
+
+        chunks.push(remaining.slice(0, best));
+        remaining = remaining.slice(best);
+      }
+
+      return chunks;
+    };
+
+    const lines: string[] = [];
+    const paragraphs = text
+      .replace(/\t/g, ' ')
+      .split(/\r?\n/)
+      .map(paragraph => paragraph.replace(/\s+/g, ' ').trim());
+
+    paragraphs.forEach(paragraph => {
+      if (!paragraph) {
+        if (lines.length) lines.push('');
+        return;
+      }
+
+      let current = '';
+      const tokens = paragraph.split(' ').flatMap(breakLongToken);
+
+      tokens.forEach(token => {
+        const candidate = current ? `${current} ${token}` : token;
+        if (!current || pdf.getTextWidth(candidate) <= width) {
+          current = candidate;
+        } else {
+          lines.push(current);
+          current = token;
+        }
+      });
+
+      if (current) lines.push(current);
+    });
+
+    return lines.length ? lines : [''];
+  };
 
   const drawRule = (offsetY = 0) => {
     pdf.setDrawColor(226, 232, 240);
@@ -583,7 +650,7 @@ function bundleToPdf(bundle: MeetingExportBundle): Uint8Array {
     const lineHeight = options.lineHeight ?? 15;
     const x = options.x ?? marginX;
     const width = options.width ?? maxWidth;
-    const wrapped = splitLines(text, width);
+    const wrapped = splitLines(text, width, { fontSize, fontStyle: options.fontStyle });
     drawWrappedLines(wrapped, {
       x,
       fontSize,
@@ -612,7 +679,7 @@ function bundleToPdf(bundle: MeetingExportBundle): Uint8Array {
     const bulletX = marginX + 4;
     const textX = marginX + 18;
     const width = maxWidth - 18;
-    const wrapped = splitLines(text, width);
+    const wrapped = splitLines(text, width, { fontSize: 10 });
     ensureSpace(Math.min(30, wrapped.length * 14 + 6));
 
     pdf.setFont('helvetica', 'bold');
@@ -629,78 +696,41 @@ function bundleToPdf(bundle: MeetingExportBundle): Uint8Array {
     });
   };
 
-  const tableColumnWidths = (columnCount: number): number[] => {
-    if (columnCount === 1) return [maxWidth];
-    if (columnCount === 2) return [maxWidth * 0.55, maxWidth * 0.45];
-    if (columnCount === 3) return [maxWidth * 0.46, maxWidth * 0.22, maxWidth * 0.32];
-    if (columnCount === 4) return [maxWidth * 0.4, maxWidth * 0.2, maxWidth * 0.2, maxWidth * 0.2];
-
-    const width = maxWidth / columnCount;
-    return Array.from({ length: columnCount }, () => width);
-  };
-
-  const drawTableRow = (
-    cells: string[],
-    columnWidths: number[],
-    options: { header?: boolean; forceNewPage?: () => void } = {}
-  ) => {
-    const paddingX = 5;
-    const paddingY = options.header ? 7 : 6;
-    const fontSize = options.header ? 8 : 7.6;
-    const lineHeight = options.header ? 11.5 : 10.8;
-    const wrappedCells = cells.map((cell, index) => splitLines(cell || ' ', columnWidths[index] - paddingX * 2));
-    const rowHeight = Math.max(
-      options.header ? 24 : 22,
-      Math.max(...wrappedCells.map(lines => lines.length)) * lineHeight + paddingY * 2
-    );
-
-    if (y + rowHeight > pageHeight - marginBottom) {
-      if (options.forceNewPage) {
-        options.forceNewPage();
-      } else {
-        addPage();
-      }
-    }
-
-    const rowTop = y;
-    let x = marginX;
-
-    cells.forEach((_, index) => {
-      const width = columnWidths[index];
-      pdf.setFillColor(...(options.header ? [241, 245, 249] as [number, number, number] : [255, 255, 255] as [number, number, number]));
-      pdf.setDrawColor(203, 213, 225);
-      pdf.setLineWidth(0.4);
-      pdf.rect(x, rowTop, width, rowHeight, 'FD');
-
-      pdf.setFont('helvetica', options.header ? 'bold' : 'normal');
-      pdf.setFontSize(fontSize);
-      pdf.setTextColor(...(options.header ? [15, 23, 42] as [number, number, number] : [31, 41, 55] as [number, number, number]));
-      pdf.text(wrappedCells[index], x + paddingX, rowTop + paddingY + fontSize - 1);
-      x += width;
-    });
-
-    y += rowHeight;
-  };
-
   const drawMarkdownTable = (block: Extract<ParsedMarkdownBlock, { type: 'table' }>) => {
     const columnCount = Math.max(1, block.headers.length);
-    const columnWidths = tableColumnWidths(columnCount);
-    const headerCells = normalizeTableRow(block.headers, columnCount);
+    const headers = normalizeTableRow(block.headers, columnCount);
 
-    const drawHeader = () => drawTableRow(headerCells, columnWidths, { header: true });
-    const addPageWithHeader = () => {
-      addPage();
-      drawHeader();
-    };
+    block.rows.forEach((row, rowIndex) => {
+      const cells = normalizeTableRow(row, columnCount);
+      ensureSpace(44);
 
-    ensureSpace(48);
-    drawHeader();
-    block.rows.forEach(row => {
-      drawTableRow(normalizeTableRow(row, columnCount), columnWidths, {
-        forceNewPage: addPageWithHeader,
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(8.6);
+      pdf.setTextColor(37, 99, 235);
+      pdf.text(`Item ${rowIndex + 1}`, marginX, y);
+      y += 13;
+
+      cells.forEach((cell, cellIndex) => {
+        const header = headers[cellIndex] || `Column ${cellIndex + 1}`;
+        const value = cell || '-';
+        ensureSpace(28);
+
+        pdf.setFont('helvetica', 'bold');
+        pdf.setFontSize(7.4);
+        pdf.setTextColor(71, 85, 105);
+        pdf.text(header.toUpperCase(), marginX, y);
+        y += 10;
+
+        drawTextBlock(value, {
+          fontSize: 9.4,
+          lineHeight: 12.8,
+          after: 7,
+        });
       });
+
+      drawRule();
+      y += 12;
     });
-    y += 12;
   };
 
   const drawSummaryBlock = (block: ParsedMarkdownBlock) => {
@@ -746,8 +776,8 @@ function bundleToPdf(bundle: MeetingExportBundle): Uint8Array {
     const gap = 14;
     const textX = marginX + labelWidth + gap;
     const textWidth = maxWidth - labelWidth - gap;
-    const labelLines = splitLines(`${row.timestamp}\n${row.speaker}`, labelWidth);
-    const textLines = splitLines(row.text, textWidth);
+    const labelLines = splitLines(`${row.timestamp}\n${row.speaker}`, labelWidth, { fontSize: 8.5, fontStyle: 'bold' });
+    const textLines = splitLines(row.text, textWidth, { fontSize: 9.5 });
     const lineHeight = 13.5;
     const labelHeight = labelLines.length * 11.5;
     const firstBlockHeight = Math.max(labelHeight, Math.min(textLines.length, 3) * lineHeight);
@@ -789,12 +819,12 @@ function bundleToPdf(bundle: MeetingExportBundle): Uint8Array {
     y += 9;
   };
 
-  const titleLines = splitLines(bundle.title, maxWidth);
   pdf.setFont('helvetica', 'bold');
-  pdf.setFontSize(21);
+  pdf.setFontSize(18);
   pdf.setTextColor(15, 23, 42);
+  const titleLines = splitLines(bundle.title, maxWidth, { fontSize: 18, fontStyle: 'bold' });
   pdf.text(titleLines, marginX, y);
-  y += titleLines.length * 25 + 10;
+  y += titleLines.length * 22 + 10;
   pdf.setDrawColor(37, 99, 235);
   pdf.setLineWidth(1);
   pdf.line(marginX, y, pageWidth - marginX, y);
@@ -810,7 +840,7 @@ function bundleToPdf(bundle: MeetingExportBundle): Uint8Array {
     pdf.setTextColor(71, 85, 105);
     pdf.text(`${label}:`, marginX, y);
     pdf.setFont('helvetica', 'normal');
-    const valueLines = splitLines(value, maxWidth - 68);
+    const valueLines = splitLines(value, maxWidth - 68, { fontSize: 8.7 });
     pdf.text(valueLines, marginX + 68, y);
     y += Math.max(13, valueLines.length * 11.5);
   });
