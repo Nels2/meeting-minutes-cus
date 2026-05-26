@@ -699,6 +699,53 @@ function bundleToPdf(bundle: MeetingExportBundle): Uint8Array {
   const drawMarkdownTable = (block: Extract<ParsedMarkdownBlock, { type: 'table' }>) => {
     const columnCount = Math.max(1, block.headers.length);
     const headers = normalizeTableRow(block.headers, columnCount);
+    const normalizedHeaders = headers.map(header => header.toLowerCase().replace(/[^a-z0-9]/g, ''));
+    const primaryColumnIndex = normalizedHeaders.findIndex(header =>
+      /^(action|actionitem|task|todo|item|description|nextstep|nextsteps)$/.test(header)
+    );
+    const hasActionMetadata = normalizedHeaders.some(header =>
+      /^(owner|assignee|responsible|due|duedate|deadline|date|status|priority)$/.test(header)
+    );
+
+    if (primaryColumnIndex >= 0 && hasActionMetadata) {
+      block.rows.forEach((row, rowIndex) => {
+        const cells = normalizeTableRow(row, columnCount);
+        const actionText = cells[primaryColumnIndex] || `Action item ${rowIndex + 1}`;
+        const metadata = cells
+          .map((value, index) => ({ label: headers[index], value }))
+          .filter((entry, index) => index !== primaryColumnIndex && entry.value.trim());
+
+        ensureSpace(40);
+        drawTextBlock(`${rowIndex + 1}. ${actionText}`, {
+          fontSize: 10.2,
+          lineHeight: 14,
+          fontStyle: 'bold',
+          color: [15, 23, 42],
+          after: 4,
+        });
+
+        metadata.forEach(entry => {
+          ensureSpace(24);
+          pdf.setFont('helvetica', 'bold');
+          pdf.setFontSize(7.2);
+          pdf.setTextColor(71, 85, 105);
+          pdf.text(`${entry.label.toUpperCase()}:`, marginX + 14, y);
+
+          drawTextBlock(entry.value, {
+            x: marginX + 92,
+            width: maxWidth - 92,
+            fontSize: 8.8,
+            lineHeight: 11.8,
+            color: [51, 65, 85],
+            after: 4,
+          });
+        });
+
+        drawRule();
+        y += 12;
+      });
+      return;
+    }
 
     block.rows.forEach((row, rowIndex) => {
       const cells = normalizeTableRow(row, columnCount);
