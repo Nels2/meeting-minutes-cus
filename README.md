@@ -44,7 +44,7 @@ A privacy-first AI meeting assistant that captures, transcribes, and summarizes 
 
 ---
 
-> **Meetily PRO Upgrade Offer** - Meetily PRO is available for users who need enhanced accuracy, advanced exports, custom summary workflows, and team-ready features. Use coupon code **LAUNCH20** for **20% off** until the next Meetily Community Edition release. Speaker diarization is also planned for PRO in mid-June. [Explore Meetily PRO →](https://meetily.ai/pro/)
+> **Meetily PRO Available** - Looking for enhanced accuracy, advanced exports, custom summary workflows, team workflows, and managed compliance? Meetily PRO is the professional-grade solution for teams and organizations. **This Community Edition remains forever free & open source**. Use coupon code **LAUNCH20** for **20% off** until the next Meetily Community Edition release. Speaker diarization is planned for PRO in mid-June. [Learn more about PRO →](https://meetily.ai/pro/)
 
 ---
 
@@ -97,6 +97,12 @@ Whether you're a defense consultant, enterprise executive, legal professional, o
 - **Local First:** All processing is done on your machine. No data ever leaves your computer.
 - **Real-time Transcription:** Get a live transcript of your meeting as it happens.
 - **AI-Powered Summaries:** Generate summaries of your meetings using powerful language models.
+- **Microsoft 365 Calendar Integration:** Connect your calendar, fetch upcoming events, and attach current event context to recordings.
+- **Automatic Meeting Detection:** Detect active meeting apps/windows and optionally auto-start or auto-stop recording.
+- **Formatted Exports:** Export complete meetings to Markdown, DOCX, or PDF with metadata, summaries, and transcript segments.
+- **Custom Transcription Servers:** Use OpenAI-compatible transcription endpoints, including audio and chat/vision APIs for models such as VibeVoice.
+- **Speaker Labels:** Display speaker labels returned by transcription providers, including `SPEAKER_ID`-style labels.
+- **Theme Sync:** Choose light, dark, or system theme; system mode follows OS appearance changes.
 - **Multi-Platform:** Works on macOS, Windows, and Linux.
 - **Open Source:** Meetily is open source and free to use.
 - **Flexible AI Provider Support:** Choose from Ollama (local), Claude, Groq, OpenRouter, or use your own OpenAI-compatible endpoint.
@@ -163,6 +169,22 @@ Generate meeting summaries with your choice of AI provider. **Ollama** (local) i
     <img src="docs/editor1.png" width="650" style="border-radius: 10px;" alt="Editor Summary generation" />
 </p>
 
+### 📆 Calendar Integration
+
+Connect Microsoft 365 calendar, fetch upcoming events, and use the current calendar event as recording context so summaries can include the meeting title, schedule, and relevant event details.
+
+### 🎥 Automatic Meeting Detection
+
+Detect meeting activity from supported meeting apps/windows and optionally start or stop recording automatically. Meeting detection can be configured from Settings and works with the local recording workflow.
+
+### 📄 Meeting Exports
+
+Export complete meetings as **Markdown**, **DOCX**, or **PDF**, including meeting metadata, AI summaries, and transcript segments. Exported summaries preserve common Markdown formatting such as headings, lists, tables, and action items.
+
+### 🌓 Theme Sync
+
+Choose light, dark, or system theme. In system mode, Meetily follows operating system appearance changes so the app stays aligned with your desktop.
+
 ### 🔒 Privacy-First Design
 
 All data stays on your machine. Transcription models, recordings, and transcripts are stored locally.
@@ -173,7 +195,9 @@ All data stays on your machine. Transcription models, recordings, and transcript
 
 ### 🌐 Custom OpenAI Endpoint Support
 
-Use your own OpenAI-compatible endpoint for AI summaries. Perfect for organizations with custom AI infrastructure or preferred providers.
+Use your own OpenAI-compatible endpoint for AI summaries and transcription. Transcription endpoints can use a standard audio API or a chat/vision API, which is useful for multimodal transcription models such as VibeVoice.
+
+When a transcription provider returns speaker metadata, Meetily carries it through to the transcript UI. Supported response fields include `speaker`, `speaker_id`, `speakerId`, `speaker_label`, and `speakerLabel`, so labels such as `SPEAKER_00` can appear directly in transcripts and exports.
 
 <p align="center">
     <img src="docs/custom.png" width="650" style="border-radius: 10px;" alt="Custom OpenAI Endpoint Configuration" />
@@ -206,6 +230,49 @@ For more details, see the [Architecture documentation](docs/architecture.md).
 
 If you want to contribute to Meetily or build it from source, you'll need to have Rust and Node.js installed. For detailed build instructions, please see the [Building from Source guide](docs/BUILDING.md).
 
+### ⚙️ Deployment Configuration
+
+Meetily can be preconfigured with a `deployment_config.json` file for seeded or managed deployments. Place this file in the Tauri app data directory, not the repository root.
+
+On Windows, this is typically:
+
+```text
+%APPDATA%\com.meetily.ai\deployment_config.json
+```
+
+The config supports `summary`, `transcription`, and `calendar` sections. Each section can use:
+
+- `mode: "seed"` to apply only when the setting is missing
+- `mode: "managed"` to enforce the setting whenever deployment config is applied
+
+Example summary configuration using a Custom OpenAI-compatible endpoint:
+
+```json
+{
+  "version": 1,
+  "summary": {
+    "mode": "managed",
+    "provider": "custom-openai",
+    "model": "llama-3.1-8b-instruct",
+    "apiKeyEnv": "CUSTOM_OPENAI_API_KEY",
+    "customOpenAI": {
+      "endpoint": "http://localhost:8000/v1",
+      "maxTokens": 4096,
+      "temperature": 0.2,
+      "topP": 0.95
+    }
+  }
+}
+```
+
+For Custom OpenAI summary configuration, only `provider`, `model`, and `customOpenAI.endpoint` are required. `apiKey`, `apiKeyEnv`, `maxTokens`, `temperature`, and `topP` are optional. If both `apiKeyEnv` and `apiKey` are provided, the environment variable wins.
+
+Supported summary providers:
+
+```text
+builtin-ai, ollama, openai, claude, groq, openrouter, custom-openai
+```
+
 ## Meetily Pro
 
 <p align="center">
@@ -225,12 +292,12 @@ Speaker diarization is planned for mid-June, bringing automatic speaker separati
 ### Key Advantages Over Community Edition:
 
 - **Enhanced Accuracy**: Superior transcription models for professional-grade accuracy
-- **Custom Summary Templates**: Tailor summaries to your specific workflow and needs
-- **Advanced Export Options**: PDF, DOCX, and Markdown exports with formatting
-- **Auto-detect and Join Meetings**: Automatic meeting detection and joining
-- **Speaker Identification**: Distinguish between speakers automatically *(Coming Soon)*
+- **Advanced Summary Customization**: Tailor summaries to your specific workflow and needs
+- **Team Workflow Features**: Collaboration-oriented workflows for organizations
+- **Enhanced Meeting Automation**: More advanced meeting joining and automation options
+- **Advanced Speaker Workflows**: Organization-ready speaker analytics and review workflows *(Coming Soon)*
 - **Chat with Meetings**: AI-powered meeting insights and queries *(Coming Soon)*
-- **Calendar Integration**: Seamless integration with your calendar *(Coming Soon)*
+- **Advanced Calendar Workflows**: Team-focused calendar and scheduling capabilities
 - **Self-Hosted Deployment**: Deploy on your own infrastructure for teams
 - **GDPR Compliance Built-In**: Privacy by design architecture with complete audit trails
 - **Priority Support**: Dedicated support for PRO users
@@ -239,7 +306,7 @@ Speaker diarization is planned for mid-June, bringing automatic speaker separati
 
 - **Professionals** who need the highest accuracy for critical meetings
 - **Teams and organizations** (2-100 users) requiring self-hosted deployment
-- **Power users** who need advanced export formats and custom workflows
+- **Power users** who need advanced customization and workflow automation
 - **Compliance-focused organizations** requiring GDPR readiness
 
 > **Note:** Meetily Community Edition remains **free & open source forever** with local transcription, AI summaries, and core features. PRO is a separate professional solution for users who need enhanced accuracy and advanced capabilities.
