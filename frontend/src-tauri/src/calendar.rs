@@ -428,6 +428,33 @@ fn parse_graph_datetime(value: &str) -> Option<DateTime<Utc>> {
         })
 }
 
+fn event_has_not_ended(
+    event: &O365CalendarEvent,
+    now: DateTime<Utc>,
+    grace_after: Duration,
+) -> bool {
+    parse_graph_datetime(&event.end)
+        .map(|end| now <= end + grace_after)
+        .unwrap_or(true)
+}
+
+fn prune_past_events(
+    events: Vec<O365CalendarEvent>,
+    now: DateTime<Utc>,
+    grace_after: Duration,
+) -> Vec<O365CalendarEvent> {
+    events
+        .into_iter()
+        .filter(|event| event_has_not_ended(event, now, grace_after))
+        .collect()
+}
+
+fn prune_stored_past_events(state: &mut StoredCalendarState, grace_after: Duration) -> bool {
+    let original_len = state.last_events.len();
+    state.last_events = prune_past_events(state.last_events.clone(), Utc::now(), grace_after);
+    state.last_events.len() != original_len
+}
+
 fn event_context(event: &O365CalendarEvent) -> String {
     let mut lines = vec![
         format!("Calendar event: {}", event.title),
@@ -514,6 +541,7 @@ async fn fetch_events_from_graph<R: Runtime>(
     app: &AppHandle<R>,
     days_before: i64,
     days_after: i64,
+    keep_ended_grace: Duration,
 ) -> Result<Vec<O365CalendarEvent>, String> {
     let access_token = ensure_access_token(app).await?;
     let start = Utc::now() - Duration::days(days_before.max(0));
@@ -591,6 +619,7 @@ async fn fetch_events_from_graph<R: Runtime>(
             }
         })
         .collect::<Vec<_>>();
+    let events = prune_past_events(events, Utc::now(), keep_ended_grace);
 
     let mut state = read_state(app)?;
     state.last_events = events.clone();
@@ -697,7 +726,11 @@ async fn handle_loopback_redirect<R: Runtime>(
 pub async fn calendar_get_o365_settings<R: Runtime>(
     app: AppHandle<R>,
 ) -> Result<O365CalendarConnectionState, String> {
-    let state = read_state(&app)?;
+    let mut state = read_state(&app)?;
+    if prune_stored_past_events(&mut state, Duration::zero()) {
+        write_state(&app, &state)?;
+    }
+
     Ok(O365CalendarConnectionState {
         settings: state.settings,
         connected: state.token.is_some(),
@@ -845,21 +878,26 @@ pub async fn calendar_fetch_o365_events<R: Runtime>(
     days_before: Option<i64>,
     days_after: Option<i64>,
 ) -> Result<Vec<O365CalendarEvent>, String> {
-    fetch_events_from_graph(&app, days_before.unwrap_or(1), days_after.unwrap_or(14)).await
+    fetch_events_from_graph(
+        &app,
+        days_before.unwrap_or(1),
+        days_after.unwrap_or(14),
+        Duration::zero(),
+    )
+    .await
 }
 
 #[tauri::command]
 pub async fn calendar_get_current_o365_event<R: Runtime>(
     app: AppHandle<R>,
 ) -> Result<Option<O365CalendarEvent>, String> {
-    let mut events = read_state(&app)?.last_events;
-    if events.is_empty() {
-        events = fetch_events_from_graph(&app, 1, 1).await?;
-    }
-
     let now = Utc::now();
     let grace_before = Duration::minutes(10);
     let grace_after = Duration::minutes(10);
+    let mut events = prune_past_events(read_state(&app)?.last_events, now, grace_after);
+    if events.is_empty() {
+        events = fetch_events_from_graph(&app, 1, 1, grace_after).await?;
+    }
 
     Ok(events
         .into_iter()
@@ -892,9 +930,11 @@ pub async fn calendar_build_event_context(event: O365CalendarEvent) -> Result<St
 mod tests {
     use super::{
         exchange_redirect_uri, normalize_scopes, normalize_settings, parse_redirect_query,
-        reconcile_deployed_calendar_state, redirect_url_from_request, validate_redirect_uri,
-        O365CalendarSettings, O365CalendarToken, StoredCalendarState, DEFAULT_SCOPES,
+        prune_past_events, reconcile_deployed_calendar_state, redirect_url_from_request,
+        validate_redirect_uri, O365CalendarEvent, O365CalendarSettings, O365CalendarToken,
+        StoredCalendarState, DEFAULT_SCOPES,
     };
+    use chrono::{Duration, Utc};
 
     #[test]
     fn blank_scopes_fall_back_to_default() {
@@ -1060,5 +1100,69 @@ mod tests {
         assert!(next.pending_state.is_none());
         assert!(next.pending_redirect_uri.is_none());
         assert!(next.last_events.is_empty());
+    }
+
+    fn test_event(
+        id: &str,
+        start: chrono::DateTime<Utc>,
+        end: chrono::DateTime<Utc>,
+    ) -> O365CalendarEvent {
+        O365CalendarEvent {
+            id: id.to_string(),
+            title: id.to_string(),
+            join_url: None,
+            participants: Vec::new(),
+            description: None,
+            start: start.to_rfc3339(),
+            end: end.to_rfc3339(),
+            web_link: None,
+        }
+    }
+
+    #[test]
+    fn past_calendar_events_are_pruned() {
+        let now = Utc::now();
+        let events = vec![
+            test_event("past", now - Duration::hours(2), now - Duration::hours(1)),
+            test_event(
+                "current",
+                now - Duration::minutes(5),
+                now + Duration::minutes(30),
+            ),
+            test_event("future", now + Duration::hours(1), now + Duration::hours(2)),
+        ];
+
+        let remaining = prune_past_events(events, now, Duration::zero());
+
+        assert_eq!(
+            remaining
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["current", "future"]
+        );
+    }
+
+    #[test]
+    fn current_event_grace_keeps_recently_ended_event() {
+        let now = Utc::now();
+        let events = vec![
+            test_event(
+                "recent",
+                now - Duration::hours(1),
+                now - Duration::minutes(5),
+            ),
+            test_event("old", now - Duration::hours(2), now - Duration::minutes(20)),
+        ];
+
+        let remaining = prune_past_events(events, now, Duration::minutes(10));
+
+        assert_eq!(
+            remaining
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["recent"]
+        );
     }
 }
