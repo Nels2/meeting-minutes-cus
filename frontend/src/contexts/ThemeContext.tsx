@@ -1,6 +1,8 @@
 'use client';
 
 import React, { createContext, useContext, useEffect, useState } from 'react';
+import { setTheme as setTauriTheme } from '@tauri-apps/api/app';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 
 export type Theme = 'light' | 'dark' | 'system';
 
@@ -15,7 +17,8 @@ const THEME_STORAGE_KEY = 'meetily-theme';
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const [theme, setThemeState] = useState<Theme>('system');
-  const [resolvedTheme, setResolvedTheme] = useState<'light' | 'dark'>('light');
+  const [systemTheme, setSystemTheme] = useState<'light' | 'dark'>('light');
+  const resolvedTheme = theme === 'system' ? systemTheme : theme;
 
   useEffect(() => {
     const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY) as Theme | null;
@@ -27,19 +30,50 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
 
-    const applyTheme = () => {
-      const nextResolvedTheme =
-        theme === 'system' ? (mediaQuery.matches ? 'dark' : 'light') : theme;
+    const applySystemTheme = async () => {
+      let nextSystemTheme: 'light' | 'dark' = mediaQuery.matches ? 'dark' : 'light';
 
-      setResolvedTheme(nextResolvedTheme);
-      document.documentElement.classList.toggle('dark', nextResolvedTheme === 'dark');
+      try {
+        const nativeTheme = await getCurrentWindow().theme();
+        if (nativeTheme === 'light' || nativeTheme === 'dark') {
+          nextSystemTheme = nativeTheme;
+        }
+      } catch {
+        // Browser dev mode does not expose the Tauri window API.
+      }
+
+      setSystemTheme(nextSystemTheme);
     };
 
-    applyTheme();
-    mediaQuery.addEventListener('change', applyTheme);
+    let unlistenNativeTheme: (() => void) | undefined;
+    applySystemTheme();
+    mediaQuery.addEventListener('change', applySystemTheme);
+    getCurrentWindow()
+      .onThemeChanged(({ payload }) => {
+        if (payload === 'light' || payload === 'dark') {
+          setSystemTheme(payload);
+        }
+      })
+      .then(unlisten => {
+        unlistenNativeTheme = unlisten;
+      })
+      .catch(() => {
+        // Browser dev mode does not expose the Tauri window API.
+      });
 
-    return () => mediaQuery.removeEventListener('change', applyTheme);
-  }, [theme]);
+    return () => {
+      mediaQuery.removeEventListener('change', applySystemTheme);
+      unlistenNativeTheme?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', resolvedTheme === 'dark');
+
+    setTauriTheme(theme === 'system' ? null : theme).catch(() => {
+      // Browser dev mode does not expose the Tauri app API.
+    });
+  }, [resolvedTheme, theme]);
 
   const setTheme = (nextTheme: Theme) => {
     setThemeState(nextTheme);

@@ -120,7 +120,11 @@ export function buildMeetingMarkdown(bundle: MeetingExportBundle): string {
 
 type ParsedMarkdownBlock =
   | { type: 'heading1' | 'heading2' | 'heading3'; text: string }
-  | { type: 'bullet'; text: string }
+  | { type: 'heading'; level: number; text: string }
+  | { type: 'bullet'; text: string; indent: number; checked?: boolean }
+  | { type: 'ordered'; text: string; indent: number; number: string }
+  | { type: 'quote'; text: string }
+  | { type: 'code'; text: string }
   | { type: 'table'; headers: string[]; rows: string[][] }
   | { type: 'paragraph'; text: string };
 
@@ -175,8 +179,18 @@ function parseMarkdownBlocks(markdown?: string): ParsedMarkdownBlock[] {
     paragraphBuffer.length = 0;
   };
 
+  const pushListContinuation = (line: string): boolean => {
+    const previous = blocks[blocks.length - 1];
+    if ((previous?.type === 'bullet' || previous?.type === 'ordered') && /^\s{2,}\S/.test(line)) {
+      previous.text = cleanInlineMarkdown(`${previous.text} ${line.trim()}`);
+      return true;
+    }
+    return false;
+  };
+
   for (let index = 0; index < lines.length; index += 1) {
     const rawLine = lines[index];
+    const expandedLine = rawLine.replace(/\t/g, '    ');
     const line = rawLine.trim();
 
     if (!line || line === '---') {
@@ -184,21 +198,65 @@ function parseMarkdownBlocks(markdown?: string): ParsedMarkdownBlock[] {
       continue;
     }
 
-    const heading = /^(#{1,3})\s+(.+)$/.exec(line);
+    if (/^(```|~~~)/.test(line)) {
+      flushParagraph();
+      const fence = line.slice(0, 3);
+      const codeLines: string[] = [];
+      index += 1;
+
+      while (index < lines.length && !lines[index].trim().startsWith(fence)) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+
+      const text = codeLines.join('\n').trim();
+      if (text) blocks.push({ type: 'code', text });
+      continue;
+    }
+
+    const heading = /^(#{1,6})\s+(.+)$/.exec(line);
     if (heading) {
       flushParagraph();
       const depth = heading[1].length;
+      if (depth <= 3) {
+        blocks.push({
+          type: depth === 1 ? 'heading1' : depth === 2 ? 'heading2' : 'heading3',
+          text: cleanInlineMarkdown(heading[2]),
+        });
+      } else {
+        blocks.push({ type: 'heading', level: depth, text: cleanInlineMarkdown(heading[2]) });
+      }
+      continue;
+    }
+
+    const bullet = /^(\s*)[-*+]\s+(?:\[([ xX])\]\s+)?(.+)$/.exec(expandedLine);
+    if (bullet) {
+      flushParagraph();
       blocks.push({
-        type: depth === 1 ? 'heading1' : depth === 2 ? 'heading2' : 'heading3',
-        text: cleanInlineMarkdown(heading[2]),
+        type: 'bullet',
+        indent: Math.floor(bullet[1].length / 2),
+        checked: bullet[2] ? bullet[2].toLowerCase() === 'x' : undefined,
+        text: cleanInlineMarkdown(bullet[3]),
       });
       continue;
     }
 
-    const bullet = /^[-*]\s+(.+)$/.exec(line);
-    if (bullet) {
+    const ordered = /^(\s*)(\d+)[.)]\s+(.+)$/.exec(expandedLine);
+    if (ordered) {
       flushParagraph();
-      blocks.push({ type: 'bullet', text: cleanInlineMarkdown(bullet[1]) });
+      blocks.push({
+        type: 'ordered',
+        indent: Math.floor(ordered[1].length / 2),
+        number: ordered[2],
+        text: cleanInlineMarkdown(ordered[3]),
+      });
+      continue;
+    }
+
+    const quote = /^>\s?(.+)$/.exec(line);
+    if (quote) {
+      flushParagraph();
+      blocks.push({ type: 'quote', text: cleanInlineMarkdown(quote[1]) });
       continue;
     }
 
@@ -228,6 +286,10 @@ function parseMarkdownBlocks(markdown?: string): ParsedMarkdownBlock[] {
           rows,
         });
       }
+      continue;
+    }
+
+    if (pushListContinuation(expandedLine)) {
       continue;
     }
 
@@ -357,11 +419,29 @@ function markdownBlockToDocxElements(block: ParsedMarkdownBlock): (Paragraph | T
     })];
   }
 
+  if (block.type === 'heading') {
+    return [new Paragraph({
+      children: [new TextRun({ text: block.text, bold: true, size: 21, color: '334155' })],
+      spacing: { before: 140, after: 60 },
+    })];
+  }
+
   if (block.type === 'bullet') {
     return [new Paragraph({
-      children: inlineTextRuns(block.text, { size: 21, color: '1F2937' }),
+      children: inlineTextRuns(
+        block.checked === undefined ? block.text : `${block.checked ? '[x]' : '[ ]'} ${block.text}`,
+        { size: 21, color: '1F2937' }
+      ),
       bullet: { level: 0 },
-      indent: { left: 420, hanging: 180 },
+      indent: { left: 420 + block.indent * 240, hanging: 180 },
+      spacing: { after: 80 },
+    })];
+  }
+
+  if (block.type === 'ordered') {
+    return [new Paragraph({
+      children: inlineTextRuns(`${block.number}. ${block.text}`, { size: 21, color: '1F2937' }),
+      indent: { left: 240 + block.indent * 240 },
       spacing: { after: 80 },
     })];
   }
@@ -371,6 +451,21 @@ function markdownBlockToDocxElements(block: ParsedMarkdownBlock): (Paragraph | T
       markdownTableToDocxTable(block),
       new Paragraph({ text: '', spacing: { after: 140 } }),
     ];
+  }
+
+  if (block.type === 'quote') {
+    return [new Paragraph({
+      children: inlineTextRuns(block.text, { size: 20, color: '475569' }),
+      indent: { left: 300 },
+      spacing: { after: 120 },
+    })];
+  }
+
+  if (block.type === 'code') {
+    return [new Paragraph({
+      children: [new TextRun({ text: block.text, font: 'Courier New', size: 18, color: '334155' })],
+      spacing: { after: 130 },
+    })];
   }
 
   return [new Paragraph({
@@ -675,17 +770,44 @@ function bundleToPdf(bundle: MeetingExportBundle): Uint8Array {
     y += 15;
   };
 
-  const drawBullet = (text: string) => {
-    const bulletX = marginX + 4;
-    const textX = marginX + 18;
-    const width = maxWidth - 18;
+  const drawBullet = (block: Extract<ParsedMarkdownBlock, { type: 'bullet' }>) => {
+    const indent = Math.min(block.indent, 4) * 14;
+    const bulletX = marginX + 4 + indent;
+    const textX = marginX + 18 + indent;
+    const width = maxWidth - 18 - indent;
+    const marker = block.checked === undefined ? '-' : block.checked ? '[x]' : '[ ]';
+    const text = block.text;
     const wrapped = splitLines(text, width, { fontSize: 10 });
     ensureSpace(Math.min(30, wrapped.length * 14 + 6));
 
     pdf.setFont('helvetica', 'bold');
     pdf.setFontSize(9.8);
     pdf.setTextColor(37, 99, 235);
-    pdf.text('-', bulletX, y);
+    pdf.text(marker, bulletX, y);
+
+    drawWrappedLines(wrapped, {
+      x: textX,
+      fontSize: 10,
+      lineHeight: 14.2,
+      color: [31, 41, 55],
+      after: 5,
+    });
+  };
+
+  const drawOrderedItem = (block: Extract<ParsedMarkdownBlock, { type: 'ordered' }>) => {
+    const indent = Math.min(block.indent, 4) * 14;
+    const marker = `${block.number}.`;
+    const markerWidth = Math.max(18, pdf.getTextWidth(marker) + 6);
+    const markerX = marginX + 4 + indent;
+    const textX = markerX + markerWidth;
+    const width = maxWidth - (textX - marginX);
+    const wrapped = splitLines(block.text, width, { fontSize: 10 });
+    ensureSpace(Math.min(30, wrapped.length * 14 + 6));
+
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(9.8);
+    pdf.setTextColor(37, 99, 235);
+    pdf.text(marker, markerX, y);
 
     drawWrappedLines(wrapped, {
       x: textX,
@@ -793,7 +915,7 @@ function bundleToPdf(bundle: MeetingExportBundle): Uint8Array {
       return;
     }
 
-    if (block.type === 'heading3') {
+    if (block.type === 'heading3' || block.type === 'heading') {
       ensureSpace(26);
       drawTextBlock(block.text, {
         fontSize: 10.5,
@@ -806,12 +928,42 @@ function bundleToPdf(bundle: MeetingExportBundle): Uint8Array {
     }
 
     if (block.type === 'bullet') {
-      drawBullet(block.text);
+      drawBullet(block);
+      return;
+    }
+
+    if (block.type === 'ordered') {
+      drawOrderedItem(block);
       return;
     }
 
     if (block.type === 'table') {
       drawMarkdownTable(block);
+      return;
+    }
+
+    if (block.type === 'quote') {
+      drawTextBlock(block.text, {
+        x: marginX + 16,
+        width: maxWidth - 16,
+        fontSize: 9.8,
+        lineHeight: 13.8,
+        fontStyle: 'italic',
+        color: [71, 85, 105],
+        after: 8,
+      });
+      return;
+    }
+
+    if (block.type === 'code') {
+      drawTextBlock(block.text, {
+        x: marginX + 12,
+        width: maxWidth - 24,
+        fontSize: 8.8,
+        lineHeight: 12.5,
+        color: [51, 65, 85],
+        after: 8,
+      });
       return;
     }
 

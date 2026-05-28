@@ -2,7 +2,7 @@ use crate::calendar::{
     apply_deployed_calendar_settings, default_calendar_redirect_uri, default_calendar_scopes,
     O365CalendarSettings,
 };
-use crate::database::models::TranscriptSetting;
+use crate::database::models::{Setting, TranscriptSetting};
 use crate::database::repositories::setting::SettingsRepository;
 use crate::summary::CustomOpenAIConfig;
 use serde::Deserialize;
@@ -32,6 +32,7 @@ struct DeploymentConfig {
     #[allow(dead_code)]
     version: Option<u32>,
     calendar: Option<CalendarDeploymentConfig>,
+    summary: Option<SummaryDeploymentConfig>,
     transcription: Option<TranscriptionDeploymentConfig>,
 }
 
@@ -56,6 +57,28 @@ struct TranscriptionDeploymentConfig {
     api_key: Option<String>,
     api_key_env: Option<String>,
     custom_openai: Option<TranscriptCustomOpenAIDeploymentConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SummaryDeploymentConfig {
+    #[serde(default)]
+    mode: DeploymentMode,
+    provider: Option<String>,
+    model: Option<String>,
+    api_key: Option<String>,
+    api_key_env: Option<String>,
+    ollama_endpoint: Option<String>,
+    custom_openai: Option<SummaryCustomOpenAIDeploymentConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SummaryCustomOpenAIDeploymentConfig {
+    endpoint: Option<String>,
+    max_tokens: Option<i32>,
+    temperature: Option<f32>,
+    top_p: Option<f32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -129,12 +152,33 @@ fn should_apply_transcription(existing: Option<&TranscriptSetting>, mode: Deploy
     }
 }
 
+fn should_apply_summary(existing: Option<&Setting>, mode: DeploymentMode) -> bool {
+    match mode {
+        DeploymentMode::Managed => true,
+        DeploymentMode::Seed => existing
+            .map(|setting| setting.provider.trim().is_empty() || setting.model.trim().is_empty())
+            .unwrap_or(true),
+    }
+}
+
 fn validate_transcription_provider(provider: &str) -> Result<(), String> {
     match provider {
         "localWhisper" | "parakeet" | "custom-openai" | "deepgram" | "elevenLabs" | "groq"
         | "openai" => Ok(()),
         _ => Err(format!(
             "deployment_config.json transcription.provider '{}' is not supported",
+            provider
+        )),
+    }
+}
+
+fn validate_summary_provider(provider: &str) -> Result<(), String> {
+    match provider {
+        "openai" | "claude" | "ollama" | "groq" | "openrouter" | "builtin-ai" | "custom-openai" => {
+            Ok(())
+        }
+        _ => Err(format!(
+            "deployment_config.json summary.provider '{}' is not supported",
             provider
         )),
     }
@@ -153,6 +197,10 @@ fn provider_uses_api_key(provider: &str) -> bool {
         provider,
         "localWhisper" | "custom-openai" | "deepgram" | "elevenLabs" | "groq" | "openai"
     )
+}
+
+fn summary_provider_uses_api_key(provider: &str) -> bool {
+    matches!(provider, "openai" | "claude" | "groq" | "openrouter")
 }
 
 fn resolve_api_key_from_env(api_key_env: Option<&str>) -> Option<String> {
@@ -202,6 +250,142 @@ async fn apply_calendar<R: Runtime>(
         );
     }
 
+    Ok(())
+}
+
+async fn apply_summary(pool: &SqlitePool, config: &SummaryDeploymentConfig) -> Result<(), String> {
+    let provider = required_trimmed(&config.provider, "summary.provider")?;
+    let model = required_trimmed(&config.model, "summary.model")?;
+    validate_summary_provider(&provider)?;
+
+    if provider == "custom-openai" && config.custom_openai.is_none() {
+        return Err(
+            "deployment_config.json summary.customOpenAI is required for custom-openai".to_string(),
+        );
+    }
+
+    if provider != "custom-openai" && config.custom_openai.is_some() {
+        return Err(
+            "deployment_config.json summary.customOpenAI can only be used with custom-openai"
+                .to_string(),
+        );
+    }
+
+    let existing = SettingsRepository::get_model_config(pool)
+        .await
+        .map_err(|e| format!("Failed to read existing summary config: {}", e))?;
+    if !should_apply_summary(existing.as_ref(), config.mode) {
+        return Ok(());
+    }
+
+    let whisper_model = existing
+        .as_ref()
+        .map(|setting| setting.whisper_model.trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(crate::config::DEFAULT_WHISPER_MODEL)
+        .to_string();
+    let ollama_endpoint = optional_trimmed(&config.ollama_endpoint).or_else(|| {
+        existing
+            .as_ref()
+            .and_then(|setting| setting.ollama_endpoint.clone())
+            .filter(|value| !value.trim().is_empty())
+    });
+
+    SettingsRepository::save_model_config(
+        pool,
+        &provider,
+        &model,
+        &whisper_model,
+        ollama_endpoint.as_deref(),
+    )
+    .await
+    .map_err(|e| format!("Failed to save deployed summary config: {}", e))?;
+
+    let deployed_api_key =
+        resolve_deployed_api_key(config.api_key_env.as_deref(), config.api_key.as_deref());
+
+    if provider == "custom-openai" {
+        let existing_custom = SettingsRepository::get_custom_openai_config(pool)
+            .await
+            .map_err(|e| format!("Failed to read existing custom summary config: {}", e))?;
+        let custom = config.custom_openai.as_ref().expect("checked above");
+        let endpoint = required_trimmed(&custom.endpoint, "summary.customOpenAI.endpoint")?;
+        let existing_api_key = existing_custom.as_ref().and_then(|cfg| cfg.api_key.clone());
+        let (api_key, api_key_source) = match deployed_api_key {
+            Some((api_key, source)) => (Some(api_key), source),
+            None if existing_api_key.is_some() => (existing_api_key, ApiKeySource::Existing),
+            None => (None, ApiKeySource::Missing),
+        };
+        log::info!(
+            "Using summary API key source for provider '{}': {:?}",
+            provider,
+            api_key_source
+        );
+
+        SettingsRepository::save_custom_openai_config(
+            pool,
+            &CustomOpenAIConfig {
+                endpoint,
+                api_key,
+                model,
+                max_tokens: custom
+                    .max_tokens
+                    .or_else(|| existing_custom.as_ref().and_then(|cfg| cfg.max_tokens)),
+                temperature: custom
+                    .temperature
+                    .or_else(|| existing_custom.as_ref().and_then(|cfg| cfg.temperature)),
+                top_p: custom
+                    .top_p
+                    .or_else(|| existing_custom.as_ref().and_then(|cfg| cfg.top_p)),
+                transcription_api: None,
+                transcription_prompt: None,
+            },
+        )
+        .await
+        .map_err(|e| format!("Failed to save deployed custom summary config: {}", e))?;
+    } else if summary_provider_uses_api_key(&provider) {
+        if let Some((api_key, api_key_source)) = deployed_api_key {
+            SettingsRepository::save_api_key(pool, &provider, &api_key)
+                .await
+                .map_err(|e| format!("Failed to save deployed summary API key: {}", e))?;
+            log::info!(
+                "Using summary API key source for provider '{}': {:?}",
+                provider,
+                api_key_source
+            );
+        } else {
+            let existing_api_key = SettingsRepository::get_api_key(pool, &provider)
+                .await
+                .map_err(|e| format!("Failed to read existing summary API key: {}", e))?;
+            log::info!(
+                "Using summary API key source for provider '{}': {:?}",
+                provider,
+                if existing_api_key.is_some() {
+                    ApiKeySource::Existing
+                } else {
+                    ApiKeySource::Missing
+                }
+            );
+        }
+    } else if let Some((_, api_key_source)) = deployed_api_key {
+        log::info!(
+            "Ignoring summary API key source for provider '{}': {:?}",
+            provider,
+            api_key_source
+        );
+    } else {
+        log::info!(
+            "Using summary API key source for provider '{}': {:?}",
+            provider,
+            ApiKeySource::Missing
+        );
+    }
+
+    log::info!(
+        "Applied summary deployment config in {:?} mode for provider '{}'",
+        config.mode,
+        provider
+    );
     Ok(())
 }
 
@@ -344,6 +528,10 @@ pub async fn apply_deployment_config<R: Runtime>(
         apply_calendar(app, calendar).await?;
     }
 
+    if let Some(summary) = config.summary.as_ref() {
+        apply_summary(pool, summary).await?;
+    }
+
     if let Some(transcription) = config.transcription.as_ref() {
         apply_transcription(pool, transcription).await?;
     }
@@ -355,9 +543,26 @@ pub async fn apply_deployment_config<R: Runtime>(
 mod tests {
     use super::{
         provider_uses_api_key, resolve_api_key_from_env, resolve_deployed_api_key,
-        should_apply_transcription, ApiKeySource, DeploymentMode,
+        should_apply_summary, should_apply_transcription, summary_provider_uses_api_key,
+        ApiKeySource, DeploymentMode,
     };
-    use crate::database::models::TranscriptSetting;
+    use crate::database::models::{Setting, TranscriptSetting};
+
+    fn summary_setting(provider: &str, model: &str) -> Setting {
+        Setting {
+            id: "1".to_string(),
+            provider: provider.to_string(),
+            model: model.to_string(),
+            whisper_model: crate::config::DEFAULT_WHISPER_MODEL.to_string(),
+            groq_api_key: None,
+            openai_api_key: None,
+            anthropic_api_key: None,
+            ollama_api_key: None,
+            open_router_api_key: None,
+            ollama_endpoint: None,
+            custom_openai_config: None,
+        }
+    }
 
     fn transcript_setting(provider: &str, model: &str) -> TranscriptSetting {
         TranscriptSetting {
@@ -394,6 +599,29 @@ mod tests {
         let existing = transcript_setting("parakeet", crate::config::DEFAULT_PARAKEET_MODEL);
 
         assert!(should_apply_transcription(
+            Some(&existing),
+            DeploymentMode::Managed
+        ));
+    }
+
+    #[test]
+    fn seed_summary_applies_only_when_missing() {
+        let existing = summary_setting("builtin-ai", "gemma3:1b");
+        let blank_model = summary_setting("builtin-ai", "");
+
+        assert!(!should_apply_summary(Some(&existing), DeploymentMode::Seed));
+        assert!(should_apply_summary(None, DeploymentMode::Seed));
+        assert!(should_apply_summary(
+            Some(&blank_model),
+            DeploymentMode::Seed
+        ));
+    }
+
+    #[test]
+    fn managed_summary_always_applies() {
+        let existing = summary_setting("builtin-ai", "gemma3:1b");
+
+        assert!(should_apply_summary(
             Some(&existing),
             DeploymentMode::Managed
         ));
@@ -469,5 +697,13 @@ mod tests {
             resolve_deployed_api_key(None, Some("json-key")),
             Some(("json-key".to_string(), ApiKeySource::Json))
         );
+    }
+
+    #[test]
+    fn local_summary_providers_do_not_use_deployed_api_keys() {
+        assert!(!summary_provider_uses_api_key("builtin-ai"));
+        assert!(!summary_provider_uses_api_key("ollama"));
+        assert!(summary_provider_uses_api_key("openai"));
+        assert!(summary_provider_uses_api_key("openrouter"));
     }
 }
