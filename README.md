@@ -97,6 +97,7 @@ Whether you're a defense consultant, enterprise executive, legal professional, o
 - **Local First:** All processing is done on your machine. No data ever leaves your computer.
 - **Real-time Transcription:** Get a live transcript of your meeting as it happens.
 - **AI-Powered Summaries:** Generate summaries of your meetings using powerful language models.
+- **Chat with Meetings:** Ask questions about a meeting directly from the meeting details UI using its transcript, summary, and context.
 - **Microsoft 365 Calendar Integration:** Connect your calendar, fetch upcoming events, and attach current event context to recordings.
 - **Automatic Meeting Detection:** Detect active meeting apps/windows and optionally auto-start or auto-stop recording.
 - **Formatted Exports:** Export complete meetings to Markdown, DOCX, or PDF with metadata, summaries, and transcript segments.
@@ -184,6 +185,10 @@ Export complete meetings as **Markdown**, **DOCX**, or **PDF**, including meetin
 ### 🌓 Theme Sync
 
 Choose light, dark, or system theme. In system mode, Meetily follows operating system appearance changes so the app stays aligned with your desktop.
+
+### 💬 Chat with Meetings
+
+Ask questions about a meeting from the meeting details UI. Meetily uses the meeting transcript, generated summary, and additional context to answer follow-up questions without requiring you to manually search the full conversation.
 
 ### 🔒 Privacy-First Design
 
@@ -296,7 +301,7 @@ Speaker diarization is planned for mid-June, bringing automatic speaker separati
 - **Team Workflow Features**: Collaboration-oriented workflows for organizations
 - **Enhanced Meeting Automation**: More advanced meeting joining and automation options
 - **Advanced Speaker Workflows**: Organization-ready speaker analytics and review workflows *(Coming Soon)*
-- **Chat with Meetings**: AI-powered meeting insights and queries *(Coming Soon)*
+- **Advanced Meeting Chat**: Team-oriented meeting insights and shared query workflows
 - **Advanced Calendar Workflows**: Team-focused calendar and scheduling capabilities
 - **Self-Hosted Deployment**: Deploy on your own infrastructure for teams
 - **GDPR Compliance Built-In**: Privacy by design architecture with complete audit trails
