@@ -36,6 +36,7 @@ export interface CustomOpenAIConfig {
   topP: number | null;
   transcriptionApi?: string | null;
   transcriptionPrompt?: string | null;
+  sendChunkMetadataFields?: boolean | null;
 }
 
 export interface RecordingPreferences {
@@ -119,6 +120,7 @@ export class ConfigService {
       topP: config.topP,
       transcriptionApi: config.transcriptionApi ?? null,
       transcriptionPrompt: config.transcriptionPrompt ?? null,
+      sendChunkMetadataFields: config.sendChunkMetadataFields ?? false,
     });
   }
 

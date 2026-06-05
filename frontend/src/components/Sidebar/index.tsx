@@ -74,6 +74,8 @@ const Sidebar: React.FC = () => {
   const [transcriptModelConfig, setTranscriptModelConfig] = useState<TranscriptModelProps>({
     provider: 'parakeet',
     model: 'parakeet-tdt-0.6b-v3-int8',
+    apiKey: null,
+    vadPreprocessingEnabled: true,
   });
   const [settingsSaveSuccess, setSettingsSaveSuccess] = useState<boolean | null>(null);
 
@@ -215,7 +217,8 @@ const Sidebar: React.FC = () => {
       const payload = {
         provider: configToSave.provider,
         model: configToSave.model,
-        apiKey: configToSave.apiKey ?? null
+        apiKey: configToSave.apiKey ?? null,
+        vadPreprocessingEnabled: configToSave.vadPreprocessingEnabled ?? true
       };
       console.log('Saving transcript config with payload:', payload);
 
@@ -223,6 +226,7 @@ const Sidebar: React.FC = () => {
         provider: payload.provider,
         model: payload.model,
         apiKey: payload.apiKey,
+        vadPreprocessingEnabled: payload.vadPreprocessingEnabled,
       });
 
 

@@ -103,6 +103,8 @@ pub struct TranscriptConfig {
     pub model: String,
     #[serde(rename = "apiKey")]
     pub api_key: Option<String>,
+    #[serde(rename = "vadPreprocessingEnabled")]
+    pub vad_preprocessing_enabled: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -111,6 +113,8 @@ pub struct SaveTranscriptConfigRequest {
     pub model: String,
     #[serde(rename = "apiKey")]
     pub api_key: Option<String>,
+    #[serde(rename = "vadPreprocessingEnabled")]
+    pub vad_preprocessing_enabled: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -627,6 +631,7 @@ pub async fn api_get_transcript_config<R: Runtime>(
                         provider: config.provider,
                         model: config.model,
                         api_key,
+                        vad_preprocessing_enabled: config.vad_preprocessing_enabled,
                     }))
                 }
                 Err(e) => {
@@ -645,6 +650,7 @@ pub async fn api_get_transcript_config<R: Runtime>(
                 provider: "parakeet".to_string(),
                 model: crate::config::DEFAULT_PARAKEET_MODEL.to_string(),
                 api_key: None,
+                vad_preprocessing_enabled: true,
             }))
         }
         Err(e) => {
@@ -661,6 +667,7 @@ pub async fn api_save_transcript_config<R: Runtime>(
     provider: String,
     model: String,
     api_key: Option<String>,
+    vad_preprocessing_enabled: Option<bool>,
     _auth_token: Option<String>,
 ) -> Result<serde_json::Value, String> {
     log_info!(
@@ -669,7 +676,14 @@ pub async fn api_save_transcript_config<R: Runtime>(
     );
     let pool = state.db_manager.pool();
 
-    if let Err(e) = SettingsRepository::save_transcript_config(pool, &provider, &model).await {
+    if let Err(e) = SettingsRepository::save_transcript_config(
+        pool,
+        &provider,
+        &model,
+        vad_preprocessing_enabled,
+    )
+    .await
+    {
         log_error!("Failed to save transcript config: {}", e);
         return Err(e.to_string());
     }
@@ -823,7 +837,10 @@ pub async fn api_get_meeting_metadata<R: Runtime>(
     meeting_id: String,
     state: tauri::State<'_, AppState>,
 ) -> Result<MeetingMetadata, String> {
-    log_info!("api_get_meeting_metadata called for meeting_id: {}", meeting_id);
+    log_info!(
+        "api_get_meeting_metadata called for meeting_id: {}",
+        meeting_id
+    );
 
     let pool = state.db_manager.pool();
 
@@ -867,7 +884,9 @@ pub async fn api_get_meeting_transcripts<R: Runtime>(
 
     let pool = state.db_manager.pool();
 
-    match MeetingsRepository::get_meeting_transcripts_paginated(pool, &meeting_id, limit, offset).await {
+    match MeetingsRepository::get_meeting_transcripts_paginated(pool, &meeting_id, limit, offset)
+        .await
+    {
         Ok((transcripts, total_count)) => {
             log_info!(
                 "Successfully retrieved {} transcripts for meeting {} (total: {})",
@@ -899,7 +918,11 @@ pub async fn api_get_meeting_transcripts<R: Runtime>(
             })
         }
         Err(e) => {
-            log_error!("Error retrieving transcripts for meeting {}: {}", meeting_id, e);
+            log_error!(
+                "Error retrieving transcripts for meeting {}: {}",
+                meeting_id,
+                e
+            );
             Err(format!("Failed to retrieve transcripts: {}", e))
         }
     }
@@ -967,7 +990,10 @@ pub async fn api_save_transcript<R: Runtime>(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| {
             log_error!("Failed to parse transcript segments: {}", e);
-            format!("Invalid transcript data format: {}. Please check the data structure.", e)
+            format!(
+                "Invalid transcript data format: {}. Please check the data structure.",
+                e
+            )
         })?;
 
     // Log parsed segments count and first segment details
@@ -1253,13 +1279,17 @@ pub async fn api_save_custom_openai_config<R: Runtime>(
         top_p,
         transcription_api: None,
         transcription_prompt: None,
+        send_chunk_metadata_fields: false,
     };
 
     let pool = state.db_manager.pool();
 
     match SettingsRepository::save_custom_openai_config(pool, &config).await {
         Ok(()) => {
-            log_info!("✅ Successfully saved custom OpenAI config for endpoint: {}", config.endpoint);
+            log_info!(
+                "✅ Successfully saved custom OpenAI config for endpoint: {}",
+                config.endpoint
+            );
             Ok(serde_json::json!({
                 "status": "success",
                 "message": "Custom OpenAI configuration saved successfully"
@@ -1285,8 +1315,11 @@ pub async fn api_get_custom_openai_config<R: Runtime>(
     match SettingsRepository::get_custom_openai_config(pool).await {
         Ok(config) => {
             if let Some(ref c) = config {
-                log_info!("✅ Found custom OpenAI config: endpoint='{}', model='{}'",
-                    c.endpoint, c.model);
+                log_info!(
+                    "✅ Found custom OpenAI config: endpoint='{}', model='{}'",
+                    c.endpoint,
+                    c.model
+                );
             } else {
                 log_info!("No custom OpenAI config found");
             }
@@ -1313,6 +1346,7 @@ pub async fn api_save_transcript_custom_openai_config<R: Runtime>(
     top_p: Option<f32>,
     transcription_api: Option<String>,
     transcription_prompt: Option<String>,
+    send_chunk_metadata_fields: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     log_info!(
         "api_save_transcript_custom_openai_config called: endpoint='{}', model='{}'",
@@ -1356,11 +1390,7 @@ pub async fn api_save_transcript_custom_openai_config<R: Runtime>(
     let transcription_api = match transcription_api_raw.as_str() {
         "audio" => "audio".to_string(),
         "chat" | "vision" | "chat-vision" | "chat/vision" => "chat".to_string(),
-        _ => {
-            return Err(
-                "Transcription API must be 'audio' or 'chat' (chat/vision)".to_string(),
-            )
-        }
+        _ => return Err("Transcription API must be 'audio' or 'chat' (chat/vision)".to_string()),
     };
 
     let config = CustomOpenAIConfig {
@@ -1375,6 +1405,7 @@ pub async fn api_save_transcript_custom_openai_config<R: Runtime>(
             .as_deref()
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty()),
+        send_chunk_metadata_fields: send_chunk_metadata_fields.unwrap_or(false),
     };
 
     let pool = state.db_manager.pool();
@@ -1424,10 +1455,7 @@ pub async fn api_get_transcript_custom_openai_config<R: Runtime>(
             Ok(config)
         }
         Err(e) => {
-            log_error!(
-                "❌ Failed to get transcript custom OpenAI config: {}",
-                e
-            );
+            log_error!("❌ Failed to get transcript custom OpenAI config: {}", e);
             Err(format!(
                 "Failed to get transcript custom OpenAI configuration: {}",
                 e
@@ -1475,6 +1503,7 @@ pub async fn api_test_transcript_custom_openai_chat<R: Runtime>(
                 Some(trimmed)
             }
         }),
+        false,
     );
 
     let result = provider
@@ -1566,7 +1595,7 @@ pub async fn api_test_custom_openai_connection<R: Runtime>(
                                             .get("message")
                                             .and_then(|m| {
                                                 m.get("content")
-                                                .or_else(|| m.get("reasoning_content"))
+                                                    .or_else(|| m.get("reasoning_content"))
                                             })
                                             .is_some();
 
@@ -1584,17 +1613,33 @@ pub async fn api_test_custom_openai_connection<R: Runtime>(
                         }
 
                         // Response was 200 but doesn't match OpenAI format
-                        log_warn!("⚠️ Endpoint returned 200 but response doesn't match OpenAI format: {}", response_text);
+                        log_warn!(
+                            "⚠️ Endpoint returned 200 but response doesn't match OpenAI format: {}",
+                            response_text
+                        );
                         Err("Endpoint is reachable but doesn't appear to be OpenAI-compatible. Response is missing 'choices' array or 'message.content' / 'message.reasoning_content' field.".to_string())
                     }
                     Err(e) => {
-                        log_warn!("⚠️ Endpoint returned 200 but response is not valid JSON: {}", e);
-                        Err(format!("Endpoint is reachable but returned invalid JSON: {}. Response: {}", e, response_text))
+                        log_warn!(
+                            "⚠️ Endpoint returned 200 but response is not valid JSON: {}",
+                            e
+                        );
+                        Err(format!(
+                            "Endpoint is reachable but returned invalid JSON: {}. Response: {}",
+                            e, response_text
+                        ))
                     }
                 }
             } else {
-                log_warn!("⚠️ Custom OpenAI connection test failed with status {}: {}", status, response_text);
-                Err(format!("Connection failed with status {}: {}", status, response_text))
+                log_warn!(
+                    "⚠️ Custom OpenAI connection test failed with status {}: {}",
+                    status,
+                    response_text
+                );
+                Err(format!(
+                    "Connection failed with status {}: {}",
+                    status, response_text
+                ))
             }
         }
         Err(e) => {

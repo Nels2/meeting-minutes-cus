@@ -9,6 +9,14 @@ use async_trait::async_trait;
 // TRANSCRIPTION PROVIDER TRAIT & ERROR TYPES
 // ============================================================================
 
+/// Optional metadata for chunked transcription requests.
+#[derive(Debug, Clone, Default)]
+pub struct TranscriptionRequestMetadata {
+    pub meeting_id: Option<String>,
+    pub chunk_index: Option<u64>,
+    pub chunk_start_seconds: Option<f64>,
+}
+
 /// Granular error types for transcription operations
 #[derive(Debug, Clone)]
 pub enum TranscriptionError {
@@ -72,6 +80,19 @@ pub trait TranscriptionProvider: Send + Sync {
         audio: Vec<f32>,
         language: Option<String>,
     ) -> std::result::Result<TranscriptResult, TranscriptionError>;
+
+    /// Transcribe audio samples with optional chunk metadata.
+    ///
+    /// Providers that do not use request metadata can rely on the default
+    /// implementation.
+    async fn transcribe_with_metadata(
+        &self,
+        audio: Vec<f32>,
+        language: Option<String>,
+        _metadata: Option<TranscriptionRequestMetadata>,
+    ) -> std::result::Result<TranscriptResult, TranscriptionError> {
+        self.transcribe(audio, language).await
+    }
 
     /// Check if a model is currently loaded
     async fn is_model_loaded(&self) -> bool;

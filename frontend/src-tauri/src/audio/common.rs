@@ -114,6 +114,23 @@ pub(crate) fn write_transcripts_json(folder: &Path, segments: &[TranscriptSegmen
     Ok(())
 }
 
+/// Create one full-duration segment when batch VAD preprocessing is disabled.
+pub(crate) fn create_full_audio_segment(
+    samples: Vec<f32>,
+    duration_seconds: f64,
+) -> Vec<crate::audio::vad::SpeechSegment> {
+    if samples.is_empty() {
+        return Vec::new();
+    }
+
+    vec![crate::audio::vad::SpeechSegment {
+        samples,
+        start_timestamp_ms: 0.0,
+        end_timestamp_ms: duration_seconds * 1000.0,
+        confidence: 1.0,
+    }]
+}
+
 /// Split a long speech segment at the lowest-energy (silence) point near the target size.
 ///
 /// Scans for 100ms windows with minimal RMS energy within +/-3 seconds of each target
@@ -244,5 +261,22 @@ mod tests {
 
         acquired_rx.await.unwrap();
         waiter.await.unwrap();
+    }
+
+    #[test]
+    fn test_create_full_audio_segment_preserves_duration() {
+        let segments = create_full_audio_segment(vec![0.1; 32_000], 2.0);
+
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].samples.len(), 32_000);
+        assert_eq!(segments[0].start_timestamp_ms, 0.0);
+        assert_eq!(segments[0].end_timestamp_ms, 2000.0);
+        assert_eq!(segments[0].confidence, 1.0);
+    }
+
+    #[test]
+    fn test_create_full_audio_segment_empty_samples() {
+        let segments = create_full_audio_segment(Vec::new(), 2.0);
+        assert!(segments.is_empty());
     }
 }

@@ -4,6 +4,7 @@
 
 use super::provider::{
     TranscriptResult, TranscriptSegmentResult, TranscriptionError, TranscriptionProvider,
+    TranscriptionRequestMetadata,
 };
 use async_trait::async_trait;
 use base64::{engine::general_purpose, Engine as _};
@@ -53,6 +54,7 @@ pub struct CustomOpenAIProvider {
     client: Client,
     transcription_api: TranscriptionApiMode,
     transcription_prompt: Option<String>,
+    send_chunk_metadata_fields: bool,
 }
 
 impl CustomOpenAIProvider {
@@ -62,6 +64,7 @@ impl CustomOpenAIProvider {
         model: String,
         transcription_api: Option<String>,
         transcription_prompt: Option<String>,
+        send_chunk_metadata_fields: bool,
     ) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(120))
@@ -78,6 +81,7 @@ impl CustomOpenAIProvider {
                 .as_deref()
                 .map(|v| v.trim().to_string())
                 .filter(|v| !v.is_empty()),
+            send_chunk_metadata_fields,
         }
     }
 
@@ -149,6 +153,53 @@ impl CustomOpenAIProvider {
         wav.extend_from_slice(&data_size.to_le_bytes());
         wav.extend_from_slice(&pcm_bytes);
         wav
+    }
+
+    pub(crate) fn chunk_metadata_fields(
+        enabled: bool,
+        metadata: Option<&TranscriptionRequestMetadata>,
+    ) -> Vec<(&'static str, String)> {
+        if !enabled {
+            return Vec::new();
+        }
+
+        let Some(metadata) = metadata else {
+            return Vec::new();
+        };
+
+        let mut fields = Vec::new();
+        if let Some(meeting_id) = metadata
+            .meeting_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            fields.push(("meeting_id", meeting_id.to_string()));
+        }
+        if let Some(chunk_index) = metadata.chunk_index {
+            fields.push(("chunk_index", chunk_index.to_string()));
+        }
+        if let Some(chunk_start_seconds) = metadata.chunk_start_seconds {
+            if chunk_start_seconds.is_finite() {
+                fields.push((
+                    "chunk_start_seconds",
+                    format!("{:.3}", chunk_start_seconds.max(0.0)),
+                ));
+            }
+        }
+
+        fields
+    }
+
+    fn apply_chunk_metadata(
+        &self,
+        mut form: Form,
+        metadata: Option<&TranscriptionRequestMetadata>,
+    ) -> Form {
+        for (key, value) in Self::chunk_metadata_fields(self.send_chunk_metadata_fields, metadata) {
+            form = form.text(key, value);
+        }
+        form
     }
 
     fn build_chat_prompt(&self, language: Option<&str>, translate: bool) -> String {
@@ -543,6 +594,7 @@ impl CustomOpenAIProvider {
         audio: Vec<f32>,
         language: Option<String>,
         use_translation_endpoint: bool,
+        metadata: Option<&TranscriptionRequestMetadata>,
     ) -> Result<TranscriptResult, TranscriptionError> {
         let wav_bytes = Self::encode_wav(&audio);
         let retry_wav_bytes = if use_translation_endpoint {
@@ -571,6 +623,7 @@ impl CustomOpenAIProvider {
         let url = if use_translation_endpoint {
             self.translations_url()
         } else {
+            form = self.apply_chunk_metadata(form, metadata);
             self.transcription_url()
         };
 
@@ -614,6 +667,7 @@ impl CustomOpenAIProvider {
                         retry_form = retry_form.text("language", lang.clone());
                     }
                 }
+                retry_form = self.apply_chunk_metadata(retry_form, metadata);
 
                 let mut retry_request = self
                     .client
@@ -859,6 +913,15 @@ impl TranscriptionProvider for CustomOpenAIProvider {
         audio: Vec<f32>,
         language: Option<String>,
     ) -> Result<TranscriptResult, TranscriptionError> {
+        self.transcribe_with_metadata(audio, language, None).await
+    }
+
+    async fn transcribe_with_metadata(
+        &self,
+        audio: Vec<f32>,
+        language: Option<String>,
+        metadata: Option<TranscriptionRequestMetadata>,
+    ) -> Result<TranscriptResult, TranscriptionError> {
         if audio.is_empty() {
             return Err(TranscriptionError::AudioTooShort {
                 samples: 0,
@@ -893,7 +956,7 @@ impl TranscriptionProvider for CustomOpenAIProvider {
                     .await
             }
             TranscriptionApiMode::Audio => {
-                self.transcribe_audio(audio, language, use_translation_endpoint)
+                self.transcribe_audio(audio, language, use_translation_endpoint, metadata.as_ref())
                     .await
             }
         }
@@ -913,5 +976,50 @@ impl TranscriptionProvider for CustomOpenAIProvider {
 
     fn provider_name(&self) -> &'static str {
         "Custom OpenAI"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chunk_metadata_fields_empty_when_disabled() {
+        let metadata = TranscriptionRequestMetadata {
+            meeting_id: Some("meeting-123".to_string()),
+            chunk_index: Some(7),
+            chunk_start_seconds: Some(12.3456),
+        };
+
+        assert!(CustomOpenAIProvider::chunk_metadata_fields(false, Some(&metadata)).is_empty());
+    }
+
+    #[test]
+    fn chunk_metadata_fields_include_present_values() {
+        let metadata = TranscriptionRequestMetadata {
+            meeting_id: Some(" meeting-123 ".to_string()),
+            chunk_index: Some(7),
+            chunk_start_seconds: Some(12.3456),
+        };
+
+        assert_eq!(
+            CustomOpenAIProvider::chunk_metadata_fields(true, Some(&metadata)),
+            vec![
+                ("meeting_id", "meeting-123".to_string()),
+                ("chunk_index", "7".to_string()),
+                ("chunk_start_seconds", "12.346".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn chunk_metadata_fields_omit_empty_or_invalid_values() {
+        let metadata = TranscriptionRequestMetadata {
+            meeting_id: Some("   ".to_string()),
+            chunk_index: None,
+            chunk_start_seconds: Some(f64::NAN),
+        };
+
+        assert!(CustomOpenAIProvider::chunk_metadata_fields(true, Some(&metadata)).is_empty());
     }
 }

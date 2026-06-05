@@ -108,9 +108,9 @@ pub async fn check_default_legacy_database(app: AppHandle) -> Result<Option<Stri
 #[tauri::command]
 pub async fn check_homebrew_database(path: String) -> Result<Option<DatabaseCheckResult>, String> {
     let db_path = PathBuf::from(&path);
-    
+
     info!("Checking for Homebrew database at: {}", path);
-    
+
     // Check if file exists and is a regular file
     if db_path.exists() && db_path.is_file() {
         // Get file metadata to check size
@@ -118,13 +118,10 @@ pub async fn check_homebrew_database(path: String) -> Result<Option<DatabaseChec
             Ok(metadata) => {
                 let size = metadata.len();
                 info!("Found Homebrew database: {} ({} bytes)", path, size);
-                
+
                 // Only consider it valid if it has content (not empty)
                 if size > 0 {
-                    Ok(Some(DatabaseCheckResult {
-                        exists: true,
-                        size,
-                    }))
+                    Ok(Some(DatabaseCheckResult { exists: true, size }))
                 } else {
                     info!("Database file exists but is empty");
                     Ok(None)
@@ -160,8 +157,12 @@ pub async fn import_and_initialize_database(
             format!("Failed to import database: {}", e)
         })?;
 
-    if let Err(e) = crate::deployment_config::apply_deployment_config(&app, db_manager.pool()).await {
-        error!("Failed to apply deployment config after database import: {}", e);
+    if let Err(e) = crate::deployment_config::apply_deployment_config(&app, db_manager.pool()).await
+    {
+        error!(
+            "Failed to apply deployment config after database import: {}",
+            e
+        );
     }
 
     // Update app state with the new manager
@@ -189,11 +190,13 @@ pub async fn initialize_fresh_database(app: AppHandle) -> Result<(), String> {
         })?;
 
     // Update app state with the new manager
-    app.manage(AppState { db_manager: db_manager.clone() });
+    app.manage(AppState {
+        db_manager: db_manager.clone(),
+    });
 
     // Set default model configuration for fresh installs
     let pool = db_manager.pool();
-    
+
     let default_summary_model = crate::summary::summary_engine::commands::get_recommended_summary_model_for_current_system()
         .unwrap_or("qwen3.5:2b");
 
@@ -204,21 +207,30 @@ pub async fn initialize_fresh_database(app: AppHandle) -> Result<(), String> {
         default_summary_model,
         "large-v3", // Default whisper model (unused for builtin but required)
         None,
-    ).await {
+    )
+    .await
+    {
         error!("Failed to set default summary model config: {}", e);
     }
 
     // Default Transcription Model: Parakeet
-    if let Err(e) = crate::database::repositories::setting::SettingsRepository::save_transcript_config(
-        pool,
-        "parakeet",
-        crate::config::DEFAULT_PARAKEET_MODEL,
-    ).await {
+    if let Err(e) =
+        crate::database::repositories::setting::SettingsRepository::save_transcript_config(
+            pool,
+            "parakeet",
+            crate::config::DEFAULT_PARAKEET_MODEL,
+            Some(true),
+        )
+        .await
+    {
         error!("Failed to set default transcription model config: {}", e);
     }
 
     if let Err(e) = crate::deployment_config::apply_deployment_config(&app, pool).await {
-        error!("Failed to apply deployment config after fresh database initialization: {}", e);
+        error!(
+            "Failed to apply deployment config after fresh database initialization: {}",
+            e
+        );
     }
 
     info!("Fresh database initialized successfully with default models");

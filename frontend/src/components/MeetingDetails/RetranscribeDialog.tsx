@@ -234,6 +234,7 @@ export function RetranscribeDialog({
         language: languageToSend,
         model: effectiveModelName,
         provider: effectiveProvider || null,
+        vadPreprocessingEnabled: transcriptModelConfig.vadPreprocessingEnabled,
       });
     } catch (err: any) {
       setIsProcessing(false);

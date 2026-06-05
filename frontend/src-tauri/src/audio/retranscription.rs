@@ -1,12 +1,14 @@
 // Retranscription module - allows re-processing stored audio with different settings
 
 use super::common::{
-    create_transcript_segments, split_segment_at_silence, write_transcripts_json, TimedTranscript,
+    create_full_audio_segment, create_transcript_segments, split_segment_at_silence,
+    write_transcripts_json, TimedTranscript,
 };
 use super::constants::AUDIO_EXTENSIONS;
 use crate::audio::decoder::decode_audio_file;
 use crate::audio::transcription::{
     get_or_init_transcription_engine, CustomOpenAIProvider, TranscriptResult, TranscriptionEngine,
+    TranscriptionRequestMetadata,
 };
 use crate::audio::vad::get_speech_chunks_with_progress;
 use crate::config::{DEFAULT_PARAKEET_MODEL, DEFAULT_WHISPER_MODEL};
@@ -99,6 +101,7 @@ pub async fn start_retranscription<R: Runtime>(
     language: Option<String>,
     model: Option<String>,
     provider: Option<String>,
+    vad_preprocessing_enabled: Option<bool>,
 ) -> Result<RetranscriptionResult> {
     // Acquire guard - ensures flag is cleared even on panic/early return
     let _guard = RetranscriptionGuard::acquire().map_err(|e| anyhow!(e))?;
@@ -107,6 +110,8 @@ pub async fn start_retranscription<R: Runtime>(
     RETRANSCRIPTION_CANCELLED.store(false, Ordering::SeqCst);
 
     let resolved_provider = resolve_requested_provider(&app, provider.as_deref()).await?;
+    let vad_preprocessing_enabled =
+        resolve_batch_vad_preprocessing_enabled(&app, vad_preprocessing_enabled).await?;
     let use_parakeet = resolved_provider == "parakeet";
     let result = run_retranscription(
         app.clone(),
@@ -115,6 +120,7 @@ pub async fn start_retranscription<R: Runtime>(
         language,
         model,
         resolved_provider,
+        vad_preprocessing_enabled,
     )
     .await;
 
@@ -197,6 +203,7 @@ async fn run_retranscription<R: Runtime>(
     language: Option<String>,
     model: Option<String>,
     provider: String,
+    vad_preprocessing_enabled: bool,
 ) -> Result<RetranscriptionResult> {
     let folder_path = PathBuf::from(&meeting_folder_path);
     let audio_path = find_audio_file(&folder_path)?;
@@ -251,51 +258,63 @@ async fn run_retranscription<R: Runtime>(
         audio_samples.len()
     );
 
-    emit_progress(&app, &meeting_id, "vad", 20, "Detecting speech segments...");
-
     // Check for cancellation
     if RETRANSCRIPTION_CANCELLED.load(Ordering::SeqCst) {
         return Err(anyhow!("Retranscription cancelled"));
     }
 
-    // Use VAD to find natural speech boundaries (same approach as live transcription)
-    // IMPORTANT: Run VAD in a blocking task to avoid blocking the async runtime
-    // For large files (35+ minutes), VAD processing can take several minutes
-    let app_for_vad = app.clone();
-    let meeting_id_for_vad = meeting_id.clone();
+    let speech_segments = if vad_preprocessing_enabled {
+        emit_progress(&app, &meeting_id, "vad", 20, "Detecting speech segments...");
 
-    let speech_segments = tokio::task::spawn_blocking(move || {
-        get_speech_chunks_with_progress(
-            &audio_samples,
-            VAD_REDEMPTION_TIME_MS,
-            |vad_progress, segments_found| {
-                // Map VAD progress (0-100) to overall progress (20-25)
-                let overall_progress = 20 + (vad_progress as f32 * 0.05) as u32;
-                emit_progress(
-                    &app_for_vad,
-                    &meeting_id_for_vad,
-                    "vad",
-                    overall_progress,
-                    &format!(
-                        "Detecting speech segments... {}% ({} found)",
-                        vad_progress, segments_found
-                    ),
-                );
+        // Use VAD to find natural speech boundaries (same approach as live transcription)
+        // IMPORTANT: Run VAD in a blocking task to avoid blocking the async runtime
+        // For large files (35+ minutes), VAD processing can take several minutes
+        let app_for_vad = app.clone();
+        let meeting_id_for_vad = meeting_id.clone();
 
-                // Return false to cancel if cancellation requested
-                !RETRANSCRIPTION_CANCELLED.load(Ordering::SeqCst)
-            },
-        )
-    })
-    .await
-    .map_err(|e| anyhow!("VAD task panicked: {}", e))?
-    .map_err(|e| anyhow!("VAD processing failed: {}", e))?;
+        tokio::task::spawn_blocking(move || {
+            get_speech_chunks_with_progress(
+                &audio_samples,
+                VAD_REDEMPTION_TIME_MS,
+                |vad_progress, segments_found| {
+                    // Map VAD progress (0-100) to overall progress (20-25)
+                    let overall_progress = 20 + (vad_progress as f32 * 0.05) as u32;
+                    emit_progress(
+                        &app_for_vad,
+                        &meeting_id_for_vad,
+                        "vad",
+                        overall_progress,
+                        &format!(
+                            "Detecting speech segments... {}% ({} found)",
+                            vad_progress, segments_found
+                        ),
+                    );
+
+                    // Return false to cancel if cancellation requested
+                    !RETRANSCRIPTION_CANCELLED.load(Ordering::SeqCst)
+                },
+            )
+        })
+        .await
+        .map_err(|e| anyhow!("VAD task panicked: {}", e))?
+        .map_err(|e| anyhow!("VAD processing failed: {}", e))?
+    } else {
+        info!("Skipping VAD preprocessing for retranscription; transcribing full audio");
+        create_full_audio_segment(audio_samples, duration_seconds)
+    };
 
     let total_segments = speech_segments.len();
-    info!(
-        "VAD detected {} speech segments (redemption_time={}ms)",
-        total_segments, VAD_REDEMPTION_TIME_MS
-    );
+    if vad_preprocessing_enabled {
+        info!(
+            "VAD detected {} speech segments (redemption_time={}ms)",
+            total_segments, VAD_REDEMPTION_TIME_MS
+        );
+    } else {
+        info!(
+            "Created {} full-audio segment(s) with VAD preprocessing disabled",
+            total_segments
+        );
+    }
 
     // Diagnostic: log segment duration distribution
     if !speech_segments.is_empty() {
@@ -333,9 +352,12 @@ async fn run_retranscription<R: Runtime>(
         }
     }
 
-    if total_segments == 0 {
+    if total_segments == 0 && vad_preprocessing_enabled {
         warn!("No speech detected in audio");
         return Err(anyhow!("No speech detected in audio file"));
+    } else if total_segments == 0 {
+        warn!("No audio samples available after decoding");
+        return Err(anyhow!("No audio samples available after decoding"));
     }
 
     emit_progress(
@@ -420,6 +442,11 @@ async fn run_retranscription<R: Runtime>(
             segment.samples.clone(),
             if use_parakeet { None } else { language.clone() },
             i,
+            Some(TranscriptionRequestMetadata {
+                meeting_id: Some(meeting_id.clone()),
+                chunk_index: Some(i as u64),
+                chunk_start_seconds: Some(segment.start_timestamp_ms / 1000.0),
+            }),
         )
         .await?;
 
@@ -585,9 +612,25 @@ async fn resolve_requested_provider<R: Runtime>(
             provider: "parakeet".to_string(),
             model: DEFAULT_PARAKEET_MODEL.to_string(),
             api_key: None,
+            vad_preprocessing_enabled: true,
         });
 
     Ok(normalize_provider_alias(&config.provider).to_string())
+}
+
+async fn resolve_batch_vad_preprocessing_enabled<R: Runtime>(
+    app: &AppHandle<R>,
+    requested: Option<bool>,
+) -> Result<bool> {
+    if let Some(enabled) = requested {
+        return Ok(enabled);
+    }
+
+    let config = crate::api::api::api_get_transcript_config(app.clone(), app.clone().state(), None)
+        .await
+        .map_err(|e| anyhow!("Failed to load transcript settings: {}", e))?;
+
+    Ok(config.map_or(true, |config| config.vad_preprocessing_enabled))
 }
 
 async fn get_retranscription_transcription_engine<R: Runtime>(
@@ -664,6 +707,7 @@ async fn get_retranscription_transcription_engine<R: Runtime>(
                     model_name,
                     custom_config.transcription_api,
                     custom_config.transcription_prompt,
+                    custom_config.send_chunk_metadata_fields,
                 ),
             )))
         }
@@ -780,6 +824,7 @@ async fn transcribe_retranscription_segment(
     samples: Vec<f32>,
     language: Option<String>,
     segment_index: usize,
+    metadata: Option<TranscriptionRequestMetadata>,
 ) -> Result<TranscriptResult> {
     match engine {
         TranscriptionEngine::Whisper(whisper_engine) => {
@@ -820,16 +865,17 @@ async fn transcribe_retranscription_segment(
                 segments: Vec::new(),
             })
         }
-        TranscriptionEngine::Provider(provider) => {
-            provider.transcribe(samples, language).await.map_err(|e| {
+        TranscriptionEngine::Provider(provider) => provider
+            .transcribe_with_metadata(samples, language, metadata)
+            .await
+            .map_err(|e| {
                 anyhow!(
                     "{} transcription failed on segment {}: {}",
                     provider.provider_name(),
                     segment_index,
                     e
                 )
-            })
-        }
+            }),
     }
 }
 
@@ -1147,6 +1193,7 @@ pub async fn start_retranscription_command<R: Runtime>(
     language: Option<String>,
     model: Option<String>,
     provider: Option<String>,
+    vad_preprocessing_enabled: Option<bool>,
 ) -> Result<RetranscriptionStarted, String> {
     // Check if retranscription is already in progress (guard will be acquired in start_retranscription)
     if RETRANSCRIPTION_IN_PROGRESS.load(Ordering::SeqCst) {
@@ -1165,6 +1212,7 @@ pub async fn start_retranscription_command<R: Runtime>(
             language,
             model,
             provider,
+            vad_preprocessing_enabled,
         )
         .await;
 

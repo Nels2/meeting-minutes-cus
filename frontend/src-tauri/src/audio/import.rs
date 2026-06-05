@@ -4,6 +4,7 @@ use crate::api::TranscriptSegment;
 use crate::audio::decoder::{decode_audio_file, decode_audio_file_with_progress};
 use crate::audio::transcription::{
     get_or_init_transcription_engine, CustomOpenAIProvider, TranscriptResult, TranscriptionEngine,
+    TranscriptionRequestMetadata,
 };
 use crate::audio::vad::get_speech_chunks_with_progress;
 use crate::config::{DEFAULT_PARAKEET_MODEL, DEFAULT_WHISPER_MODEL};
@@ -22,7 +23,8 @@ use uuid::Uuid;
 
 use super::audio_processing::create_meeting_folder;
 use super::common::{
-    create_transcript_segments, split_segment_at_silence, write_transcripts_json, TimedTranscript,
+    create_full_audio_segment, create_transcript_segments, split_segment_at_silence,
+    write_transcripts_json, TimedTranscript,
 };
 use super::constants::AUDIO_EXTENSIONS;
 use super::recording_preferences::get_default_recordings_folder;
@@ -259,6 +261,7 @@ pub async fn start_import<R: Runtime>(
     language: Option<String>,
     model: Option<String>,
     provider: Option<String>,
+    vad_preprocessing_enabled: Option<bool>,
 ) -> Result<ImportResult> {
     // Acquire guard - ensures flag is cleared even on panic/early return
     let _guard = ImportGuard::acquire().map_err(|e| anyhow!(e))?;
@@ -267,7 +270,18 @@ pub async fn start_import<R: Runtime>(
     IMPORT_CANCELLED.store(false, Ordering::SeqCst);
 
     let use_parakeet = provider.as_deref() == Some("parakeet");
-    let result = run_import(app.clone(), source_path, title, language, model, provider).await;
+    let vad_preprocessing_enabled =
+        resolve_batch_vad_preprocessing_enabled(&app, vad_preprocessing_enabled).await?;
+    let result = run_import(
+        app.clone(),
+        source_path,
+        title,
+        language,
+        model,
+        provider,
+        vad_preprocessing_enabled,
+    )
+    .await;
 
     // Unload the engine after the batch job (success, failure, or cancellation)
     super::common::unload_engine_after_batch(use_parakeet).await;
@@ -308,6 +322,7 @@ async fn run_import<R: Runtime>(
     language: Option<String>,
     model: Option<String>,
     provider: Option<String>,
+    vad_preprocessing_enabled: bool,
 ) -> Result<ImportResult> {
     let source = PathBuf::from(&source_path);
 
@@ -406,45 +421,57 @@ async fn run_import<R: Runtime>(
         audio_samples.len()
     );
 
-    emit_progress(&app, "vad", 25, "Detecting speech segments...");
-
     // Check for cancellation
     if IMPORT_CANCELLED.load(Ordering::SeqCst) {
         let _ = std::fs::remove_dir_all(&meeting_folder);
         return Err(anyhow!("Import cancelled"));
     }
 
-    // Use VAD to find speech segments
-    let app_for_vad = app.clone();
+    let speech_segments = if vad_preprocessing_enabled {
+        emit_progress(&app, "vad", 25, "Detecting speech segments...");
 
-    let speech_segments = tokio::task::spawn_blocking(move || {
-        get_speech_chunks_with_progress(
-            &audio_samples,
-            VAD_REDEMPTION_TIME_MS,
-            |vad_progress, segments_found| {
-                let overall_progress = 25 + (vad_progress as f32 * 0.05) as u32;
-                emit_progress(
-                    &app_for_vad,
-                    "vad",
-                    overall_progress,
-                    &format!(
-                        "Detecting speech segments... {}% ({} found)",
-                        vad_progress, segments_found
-                    ),
-                );
-                !IMPORT_CANCELLED.load(Ordering::SeqCst)
-            },
-        )
-    })
-    .await
-    .map_err(|e| anyhow!("VAD task panicked: {}", e))?
-    .map_err(|e| anyhow!("VAD processing failed: {}", e))?;
+        // Use VAD to find speech segments
+        let app_for_vad = app.clone();
+
+        tokio::task::spawn_blocking(move || {
+            get_speech_chunks_with_progress(
+                &audio_samples,
+                VAD_REDEMPTION_TIME_MS,
+                |vad_progress, segments_found| {
+                    let overall_progress = 25 + (vad_progress as f32 * 0.05) as u32;
+                    emit_progress(
+                        &app_for_vad,
+                        "vad",
+                        overall_progress,
+                        &format!(
+                            "Detecting speech segments... {}% ({} found)",
+                            vad_progress, segments_found
+                        ),
+                    );
+                    !IMPORT_CANCELLED.load(Ordering::SeqCst)
+                },
+            )
+        })
+        .await
+        .map_err(|e| anyhow!("VAD task panicked: {}", e))?
+        .map_err(|e| anyhow!("VAD processing failed: {}", e))?
+    } else {
+        info!("Skipping VAD preprocessing for import; transcribing full audio");
+        create_full_audio_segment(audio_samples, duration_seconds)
+    };
 
     let total_segments = speech_segments.len();
-    info!(
-        "VAD detected {} speech segments (redemption_time={}ms)",
-        total_segments, VAD_REDEMPTION_TIME_MS
-    );
+    if vad_preprocessing_enabled {
+        info!(
+            "VAD detected {} speech segments (redemption_time={}ms)",
+            total_segments, VAD_REDEMPTION_TIME_MS
+        );
+    } else {
+        info!(
+            "Created {} full-audio segment(s) with VAD preprocessing disabled",
+            total_segments
+        );
+    }
 
     // Diagnostic: log segment duration distribution
     if !speech_segments.is_empty() {
@@ -482,7 +509,7 @@ async fn run_import<R: Runtime>(
         }
     }
 
-    if total_segments == 0 {
+    if total_segments == 0 && vad_preprocessing_enabled {
         warn!("No speech detected in audio");
 
         // Emit warning to frontend
@@ -498,6 +525,8 @@ async fn run_import<R: Runtime>(
             },
         );
         // Still create the meeting, just with no transcripts
+    } else if total_segments == 0 {
+        warn!("No audio samples available after decoding");
     }
 
     // Check for cancellation
@@ -542,6 +571,7 @@ async fn run_import<R: Runtime>(
         "Processing {} segments (after splitting)",
         processable_count
     );
+    let meeting_id = format!("meeting-{}", Uuid::new_v4());
 
     // Process each speech segment
     let mut all_transcripts: Vec<TimedTranscript> = Vec::new();
@@ -582,6 +612,11 @@ async fn run_import<R: Runtime>(
             segment.samples.clone(),
             language.clone(),
             i,
+            Some(TranscriptionRequestMetadata {
+                meeting_id: Some(meeting_id.clone()),
+                chunk_index: Some(i as u64),
+                chunk_start_seconds: Some(segment.start_timestamp_ms / 1000.0),
+            }),
         )
         .await?;
 
@@ -637,8 +672,9 @@ async fn run_import<R: Runtime>(
         .try_state::<AppState>()
         .ok_or_else(|| anyhow!("App state not available"))?;
 
-    let meeting_id = create_meeting_with_transcripts(
+    create_meeting_with_transcripts(
         app_state.db_manager.pool(),
+        &meeting_id,
         &title,
         &segments,
         meeting_folder.to_string_lossy().to_string(),
@@ -680,6 +716,21 @@ fn normalize_provider_alias(provider: &str) -> &str {
     }
 }
 
+async fn resolve_batch_vad_preprocessing_enabled<R: Runtime>(
+    app: &AppHandle<R>,
+    requested: Option<bool>,
+) -> Result<bool> {
+    if let Some(enabled) = requested {
+        return Ok(enabled);
+    }
+
+    let config = crate::api::api::api_get_transcript_config(app.clone(), app.clone().state(), None)
+        .await
+        .map_err(|e| anyhow!("Failed to load transcript settings: {}", e))?;
+
+    Ok(config.map_or(true, |config| config.vad_preprocessing_enabled))
+}
+
 async fn get_import_transcription_engine<R: Runtime>(
     app: &AppHandle<R>,
     requested_provider: Option<&str>,
@@ -705,6 +756,7 @@ async fn get_import_transcription_engine<R: Runtime>(
                         provider: "parakeet".to_string(),
                         model: crate::config::DEFAULT_PARAKEET_MODEL.to_string(),
                         api_key: None,
+                        vad_preprocessing_enabled: true,
                     });
             normalize_provider_alias(&config.provider).to_string()
         }
@@ -768,6 +820,7 @@ async fn get_import_transcription_engine<R: Runtime>(
                     model_name,
                     custom_config.transcription_api,
                     custom_config.transcription_prompt,
+                    custom_config.send_chunk_metadata_fields,
                 ),
             )))
         }
@@ -883,6 +936,7 @@ async fn transcribe_import_segment(
     samples: Vec<f32>,
     language: Option<String>,
     segment_index: usize,
+    metadata: Option<TranscriptionRequestMetadata>,
 ) -> Result<TranscriptResult> {
     match engine {
         TranscriptionEngine::Whisper(whisper_engine) => {
@@ -923,16 +977,17 @@ async fn transcribe_import_segment(
                 segments: Vec::new(),
             })
         }
-        TranscriptionEngine::Provider(provider) => {
-            provider.transcribe(samples, language).await.map_err(|e| {
+        TranscriptionEngine::Provider(provider) => provider
+            .transcribe_with_metadata(samples, language, metadata)
+            .await
+            .map_err(|e| {
                 anyhow!(
                     "{} transcription failed on segment {}: {}",
                     provider.provider_name(),
                     segment_index,
                     e
                 )
-            })
-        }
+            }),
     }
 }
 
@@ -951,11 +1006,11 @@ fn emit_progress<R: Runtime>(app: &AppHandle<R>, stage: &str, progress: u32, mes
 /// Create a new meeting with transcripts in the database
 async fn create_meeting_with_transcripts(
     pool: &sqlx::SqlitePool,
+    meeting_id: &str,
     title: &str,
     segments: &[TranscriptSegment],
     folder_path: String,
 ) -> Result<String> {
-    let meeting_id = format!("meeting-{}", Uuid::new_v4());
     let now = chrono::Utc::now();
 
     // Start transaction
@@ -972,7 +1027,7 @@ async fn create_meeting_with_transcripts(
         "INSERT INTO meetings (id, title, created_at, updated_at, folder_path)
          VALUES (?, ?, ?, ?, ?)",
     )
-    .bind(&meeting_id)
+    .bind(meeting_id)
     .bind(title)
     .bind(now)
     .bind(now)
@@ -988,7 +1043,7 @@ async fn create_meeting_with_transcripts(
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&segment.id)
-        .bind(&meeting_id)
+        .bind(meeting_id)
         .bind(&segment.text)
         .bind(&segment.timestamp)
         .bind(segment.audio_start_time)
@@ -1010,7 +1065,7 @@ async fn create_meeting_with_transcripts(
         segments.len()
     );
 
-    Ok(meeting_id)
+    Ok(meeting_id.to_string())
 }
 
 /// Get or initialize the Whisper engine
@@ -1239,6 +1294,7 @@ pub async fn start_import_audio_command<R: Runtime>(
     language: Option<String>,
     model: Option<String>,
     provider: Option<String>,
+    vad_preprocessing_enabled: Option<bool>,
 ) -> Result<ImportStarted, String> {
     // Check if import is already in progress (guard will be acquired in start_import)
     if IMPORT_IN_PROGRESS.load(Ordering::SeqCst) {
@@ -1247,7 +1303,16 @@ pub async fn start_import_audio_command<R: Runtime>(
 
     // Spawn import in background
     tauri::async_runtime::spawn(async move {
-        let result = start_import(app, source_path, title, language, model, provider).await;
+        let result = start_import(
+            app,
+            source_path,
+            title,
+            language,
+            model,
+            provider,
+            vad_preprocessing_enabled,
+        )
+        .await;
 
         if let Err(e) = result {
             error!("Import failed: {}", e);

@@ -5,6 +5,7 @@ import { Input } from './ui/input';
 import { Button } from './ui/button';
 import { Label } from './ui/label';
 import { Textarea } from './ui/textarea';
+import { Switch } from './ui/switch';
 import { Eye, EyeOff, Lock, Unlock } from 'lucide-react';
 import { toast } from 'sonner';
 import { ModelManager } from './WhisperModelManager';
@@ -15,6 +16,7 @@ export interface TranscriptModelProps {
     provider: 'localWhisper' | 'parakeet' | 'deepgram' | 'elevenLabs' | 'groq' | 'openai' | 'custom-openai';
     model: string;
     apiKey?: string | null;
+    vadPreprocessingEnabled: boolean;
 }
 
 export interface TranscriptSettingsProps {
@@ -34,6 +36,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
     const [customOpenAIEndpoint, setCustomOpenAIEndpoint] = useState<string>('');
     const [customOpenAITranscriptionApi, setCustomOpenAITranscriptionApi] = useState<string>('audio');
     const [customOpenAITranscriptionPrompt, setCustomOpenAITranscriptionPrompt] = useState<string>('');
+    const [sendChunkMetadataFields, setSendChunkMetadataFields] = useState<boolean>(false);
     const [isTestingChat, setIsTestingChat] = useState<boolean>(false);
 
     // Sync uiProvider when backend config changes (e.g., after model selection or initial load)
@@ -78,6 +81,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                 }
                 setCustomOpenAITranscriptionApi(config.transcriptionApi || 'audio');
                 setCustomOpenAITranscriptionPrompt(config.transcriptionPrompt || '');
+                setSendChunkMetadataFields(Boolean(config.sendChunkMetadataFields));
                 const modelValue = transcriptModelConfig.model?.trim()
                     ? transcriptModelConfig.model
                     : (config.model || 'whisper-1');
@@ -170,12 +174,14 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                 topP: null,
                 transcriptionApi: customOpenAITranscriptionApi,
                 transcriptionPrompt: customOpenAITranscriptionPrompt.trim() || null,
+                sendChunkMetadataFields,
             });
 
             await invoke('api_save_transcript_config', {
                 provider: 'custom-openai',
                 model: transcriptModelConfig.model.trim(),
                 apiKey: null,
+                vadPreprocessingEnabled: transcriptModelConfig.vadPreprocessingEnabled,
             });
 
             toast.success('Custom OpenAI transcription settings saved.');
@@ -212,6 +218,27 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
             toast.error('Chat transcription test failed. Check endpoint and model.');
         } finally {
             setIsTestingChat(false);
+        }
+    };
+
+    const saveVadPreprocessingEnabled = async (checked: boolean) => {
+        const updatedConfig = {
+            ...transcriptModelConfig,
+            vadPreprocessingEnabled: checked,
+        };
+        setTranscriptModelConfig(updatedConfig);
+
+        try {
+            await invoke('api_save_transcript_config', {
+                provider: updatedConfig.provider,
+                model: updatedConfig.model,
+                apiKey: updatedConfig.apiKey ?? null,
+                vadPreprocessingEnabled: checked,
+            });
+            toast.success(`VAD preprocessing ${checked ? 'enabled' : 'disabled'}.`);
+        } catch (err) {
+            console.error('Failed to save VAD preprocessing setting:', err);
+            toast.error('Failed to save VAD preprocessing setting.');
         }
     };
 
@@ -336,6 +363,22 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                     />
                                 </div>
                             )}
+                            {customOpenAITranscriptionApi === 'audio' && (
+                                <div className="flex items-start justify-between gap-4 rounded-lg border border-gray-200 p-3 dark:border-gray-800">
+                                    <div className="space-y-1">
+                                        <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                                            Send chunk metadata fields
+                                        </Label>
+                                        <p className="text-xs text-gray-500 dark:text-gray-400">
+                                            Add meeting_id, chunk_index, and chunk_start_seconds to chunked transcription form data.
+                                        </p>
+                                    </div>
+                                    <Switch
+                                        checked={sendChunkMetadataFields}
+                                        onCheckedChange={setSendChunkMetadataFields}
+                                    />
+                                </div>
+                            )}
                         </div>
                     )}
 
@@ -406,6 +449,21 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                             </div>
                         </div>
                     )}
+
+                    <div className="flex items-start justify-between gap-4 rounded-lg border border-gray-200 p-3 dark:border-gray-800">
+                        <div className="space-y-1">
+                            <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                                VAD preprocessing
+                            </Label>
+                            <p className="text-xs text-gray-500 dark:text-gray-400">
+                                Detect speech before imported audio and enhanced meetings are sent for transcription.
+                            </p>
+                        </div>
+                        <Switch
+                            checked={transcriptModelConfig.vadPreprocessingEnabled}
+                            onCheckedChange={saveVadPreprocessingEnabled}
+                        />
+                    </div>
 
                     {isCustomOpenAI && (
                         <div className="pt-2">

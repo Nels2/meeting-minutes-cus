@@ -5,6 +5,7 @@
 use super::engine::TranscriptionEngine;
 use super::provider::TranscriptionError;
 use super::provider::{TranscriptResult, TranscriptSegmentResult};
+use super::TranscriptionRequestMetadata;
 use crate::audio::AudioChunk;
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
@@ -655,8 +656,16 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
         TranscriptionEngine::Provider(provider) => {
             // NEW: Trait-based provider (clean, unified interface)
             let language = crate::get_language_preference_internal();
+            let metadata = TranscriptionRequestMetadata {
+                meeting_id: None,
+                chunk_index: Some(chunk.chunk_id),
+                chunk_start_seconds: Some(chunk.timestamp),
+            };
 
-            match provider.transcribe(speech_samples, language).await {
+            match provider
+                .transcribe_with_metadata(speech_samples, language, Some(metadata))
+                .await
+            {
                 Ok(result) => {
                     let cleaned_text = result.text.trim().to_string();
                     if cleaned_text.is_empty() {

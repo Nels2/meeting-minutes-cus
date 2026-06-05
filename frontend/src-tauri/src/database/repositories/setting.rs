@@ -20,6 +20,8 @@ pub struct SaveTranscriptConfigRequest {
     pub model: String,
     #[serde(rename = "apiKey")]
     pub api_key: Option<String>,
+    #[serde(rename = "vadPreprocessingEnabled")]
+    pub vad_preprocessing_enabled: Option<bool>,
 }
 
 pub struct SettingsRepository;
@@ -60,6 +62,19 @@ impl SettingsRepository {
             sqlx::query("ALTER TABLE transcript_settings ADD COLUMN customOpenAIConfig TEXT")
                 .execute(pool)
                 .await?;
+        }
+        Ok(())
+    }
+
+    async fn ensure_transcript_vad_preprocessing_enabled_column(
+        pool: &SqlitePool,
+    ) -> std::result::Result<(), sqlx::Error> {
+        if !Self::column_exists(pool, "transcript_settings", "vadPreprocessingEnabled").await? {
+            sqlx::query(
+                "ALTER TABLE transcript_settings ADD COLUMN vadPreprocessingEnabled INTEGER NOT NULL DEFAULT 1",
+            )
+            .execute(pool)
+            .await?;
         }
         Ok(())
     }
@@ -177,30 +192,37 @@ impl SettingsRepository {
     pub async fn get_transcript_config(
         pool: &SqlitePool,
     ) -> std::result::Result<Option<TranscriptSetting>, sqlx::Error> {
+        Self::ensure_transcript_vad_preprocessing_enabled_column(pool).await?;
+        Self::ensure_transcript_custom_openai_config_column(pool).await?;
+
         let setting =
             sqlx::query_as::<_, TranscriptSetting>("SELECT * FROM transcript_settings LIMIT 1")
                 .fetch_optional(pool)
                 .await?;
         Ok(setting)
-
     }
 
     pub async fn save_transcript_config(
         pool: &SqlitePool,
         provider: &str,
         model: &str,
+        vad_preprocessing_enabled: Option<bool>,
     ) -> std::result::Result<(), sqlx::Error> {
+        Self::ensure_transcript_vad_preprocessing_enabled_column(pool).await?;
+
         sqlx::query(
             r#"
-            INSERT INTO transcript_settings (id, provider, model)
-            VALUES ('1', $1, $2)
+            INSERT INTO transcript_settings (id, provider, model, vadPreprocessingEnabled)
+            VALUES ('1', $1, $2, COALESCE($3, 1))
             ON CONFLICT(id) DO UPDATE SET
                 provider = excluded.provider,
-                model = excluded.model
+                model = excluded.model,
+                vadPreprocessingEnabled = COALESCE($3, transcript_settings.vadPreprocessingEnabled)
             "#,
         )
         .bind(provider)
         .bind(model)
+        .bind(vad_preprocessing_enabled)
         .execute(pool)
         .await?;
 
@@ -234,7 +256,9 @@ impl SettingsRepository {
             ON CONFLICT(id) DO UPDATE SET
                 "{}" = $1
             "#,
-            api_key_column, crate::config::DEFAULT_PARAKEET_MODEL, api_key_column
+            api_key_column,
+            crate::config::DEFAULT_PARAKEET_MODEL,
+            api_key_column
         );
         sqlx::query(&query).bind(api_key).execute(pool).await?;
 
@@ -327,7 +351,7 @@ impl SettingsRepository {
             FROM settings
             WHERE id = '1'
             LIMIT 1
-            "#
+            "#,
         )
         .fetch_optional(pool)
         .await?;
@@ -338,10 +362,11 @@ impl SettingsRepository {
 
                 if let Some(json) = config_json {
                     // Parse JSON into CustomOpenAIConfig
-                    let config: CustomOpenAIConfig = serde_json::from_str(&json)
-                        .map_err(|e| sqlx::Error::Protocol(
-                            format!("Invalid JSON in customOpenAIConfig: {}", e).into()
-                        ))?;
+                    let config: CustomOpenAIConfig = serde_json::from_str(&json).map_err(|e| {
+                        sqlx::Error::Protocol(
+                            format!("Invalid JSON in customOpenAIConfig: {}", e).into(),
+                        )
+                    })?;
 
                     Ok(Some(config))
                 } else {
@@ -368,10 +393,9 @@ impl SettingsRepository {
         Self::ensure_custom_openai_config_column(pool).await?;
 
         // Serialize config to JSON
-        let config_json = serde_json::to_string(config)
-            .map_err(|e| sqlx::Error::Protocol(
-                format!("Failed to serialize config to JSON: {}", e).into()
-            ))?;
+        let config_json = serde_json::to_string(config).map_err(|e| {
+            sqlx::Error::Protocol(format!("Failed to serialize config to JSON: {}", e).into())
+        })?;
 
         // Upsert into settings table
         sqlx::query(
@@ -416,10 +440,11 @@ impl SettingsRepository {
                 let config_json: Option<String> = record.get("customOpenAIConfig");
 
                 if let Some(json) = config_json {
-                    let config: CustomOpenAIConfig = serde_json::from_str(&json)
-                        .map_err(|e| sqlx::Error::Protocol(
-                            format!("Invalid JSON in transcript customOpenAIConfig: {}", e).into()
-                        ))?;
+                    let config: CustomOpenAIConfig = serde_json::from_str(&json).map_err(|e| {
+                        sqlx::Error::Protocol(
+                            format!("Invalid JSON in transcript customOpenAIConfig: {}", e).into(),
+                        )
+                    })?;
 
                     Ok(Some(config))
                 } else {
@@ -437,10 +462,11 @@ impl SettingsRepository {
     ) -> std::result::Result<(), sqlx::Error> {
         Self::ensure_transcript_custom_openai_config_column(pool).await?;
 
-        let config_json = serde_json::to_string(config)
-            .map_err(|e| sqlx::Error::Protocol(
-                format!("Failed to serialize transcript config to JSON: {}", e).into()
-            ))?;
+        let config_json = serde_json::to_string(config).map_err(|e| {
+            sqlx::Error::Protocol(
+                format!("Failed to serialize transcript config to JSON: {}", e).into(),
+            )
+        })?;
 
         sqlx::query(
             r#"
@@ -456,5 +482,113 @@ impl SettingsRepository {
         .await?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn create_legacy_transcript_settings_table(pool: &SqlitePool) {
+        sqlx::query(
+            r#"
+            CREATE TABLE transcript_settings (
+                id TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                whisperApiKey TEXT,
+                deepgramApiKey TEXT,
+                elevenLabsApiKey TEXT,
+                groqApiKey TEXT,
+                openaiApiKey TEXT
+            )
+            "#,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_save_transcript_config_defaults_vad_enabled() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        create_legacy_transcript_settings_table(&pool).await;
+
+        SettingsRepository::save_transcript_config(
+            &pool,
+            "parakeet",
+            crate::config::DEFAULT_PARAKEET_MODEL,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let config = SettingsRepository::get_transcript_config(&pool)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(config.vad_preprocessing_enabled);
+    }
+
+    #[tokio::test]
+    async fn test_save_transcript_config_preserves_vad_when_unspecified() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        create_legacy_transcript_settings_table(&pool).await;
+
+        SettingsRepository::save_transcript_config(
+            &pool,
+            "parakeet",
+            crate::config::DEFAULT_PARAKEET_MODEL,
+            Some(false),
+        )
+        .await
+        .unwrap();
+
+        SettingsRepository::save_transcript_config(
+            &pool,
+            "localWhisper",
+            crate::config::DEFAULT_WHISPER_MODEL,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let config = SettingsRepository::get_transcript_config(&pool)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(config.provider, "localWhisper");
+        assert!(!config.vad_preprocessing_enabled);
+    }
+
+    #[tokio::test]
+    async fn test_save_transcript_custom_openai_config_preserves_chunk_metadata_toggle() {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        create_legacy_transcript_settings_table(&pool).await;
+
+        let config = CustomOpenAIConfig {
+            endpoint: "http://localhost:8000/v1".to_string(),
+            api_key: None,
+            model: "whisper-1".to_string(),
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            transcription_api: Some("audio".to_string()),
+            transcription_prompt: None,
+            send_chunk_metadata_fields: true,
+        };
+
+        SettingsRepository::save_transcript_custom_openai_config(&pool, &config)
+            .await
+            .unwrap();
+
+        let saved = SettingsRepository::get_transcript_custom_openai_config(&pool)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(saved.send_chunk_metadata_fields);
     }
 }

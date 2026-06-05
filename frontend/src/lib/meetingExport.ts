@@ -142,6 +142,27 @@ function cleanInlineMarkdown(value: string): string {
     .trim();
 }
 
+function hasMarkdownHardBreak(line: string): boolean {
+  return /(?:\\| {2,})[ \t]*$/.test(line);
+}
+
+function stripMarkdownHardBreak(line: string): string {
+  return line.replace(/(?:\\| {2,})[ \t]*$/, '');
+}
+
+function appendMarkdownLine(buffer: string[], text: string, hardBreak: boolean) {
+  buffer.push(hardBreak ? `${text}\n` : text);
+}
+
+function appendInlineMarkdown(current: string, next: string, hardBreak: boolean): string {
+  const separator = !current || current.endsWith('\n') ? '' : ' ';
+  return `${current}${separator}${cleanInlineMarkdown(next)}${hardBreak ? '\n' : ''}`;
+}
+
+function normalizeMarkdownText(value: string): string {
+  return value.replace(/[ \t]*\n[ \t]*/g, '\n').trim();
+}
+
 function isMarkdownTableRow(line: string): boolean {
   return /^\s*\|.*\|\s*$/.test(line);
 }
@@ -174,15 +195,18 @@ function parseMarkdownBlocks(markdown?: string): ParsedMarkdownBlock[] {
   const lines = markdown.split('\n');
 
   const flushParagraph = () => {
-    const text = cleanInlineMarkdown(paragraphBuffer.join(' '));
+    const text = normalizeMarkdownText(cleanInlineMarkdown(paragraphBuffer.join(' ')));
     if (text) blocks.push({ type: 'paragraph', text });
     paragraphBuffer.length = 0;
   };
 
-  const pushListContinuation = (line: string): boolean => {
+  const pushListContinuation = (line: string, hardBreak: boolean): boolean => {
     const previous = blocks[blocks.length - 1];
-    if ((previous?.type === 'bullet' || previous?.type === 'ordered') && /^\s{2,}\S/.test(line)) {
-      previous.text = cleanInlineMarkdown(`${previous.text} ${line.trim()}`);
+    if (
+      (previous?.type === 'bullet' || previous?.type === 'ordered') &&
+      (/^\s{2,}\S/.test(line) || previous.text.endsWith('\n'))
+    ) {
+      previous.text = appendInlineMarkdown(previous.text, line.trim(), hardBreak);
       return true;
     }
     return false;
@@ -190,8 +214,10 @@ function parseMarkdownBlocks(markdown?: string): ParsedMarkdownBlock[] {
 
   for (let index = 0; index < lines.length; index += 1) {
     const rawLine = lines[index];
-    const expandedLine = rawLine.replace(/\t/g, '    ');
-    const line = rawLine.trim();
+    const hardBreak = hasMarkdownHardBreak(rawLine);
+    const normalizedLine = stripMarkdownHardBreak(rawLine);
+    const expandedLine = normalizedLine.replace(/\t/g, '    ');
+    const line = normalizedLine.trim();
 
     if (!line || line === '---') {
       flushParagraph();
@@ -236,7 +262,7 @@ function parseMarkdownBlocks(markdown?: string): ParsedMarkdownBlock[] {
         type: 'bullet',
         indent: Math.floor(bullet[1].length / 2),
         checked: bullet[2] ? bullet[2].toLowerCase() === 'x' : undefined,
-        text: cleanInlineMarkdown(bullet[3]),
+        text: `${cleanInlineMarkdown(bullet[3])}${hardBreak ? '\n' : ''}`,
       });
       continue;
     }
@@ -248,7 +274,7 @@ function parseMarkdownBlocks(markdown?: string): ParsedMarkdownBlock[] {
         type: 'ordered',
         indent: Math.floor(ordered[1].length / 2),
         number: ordered[2],
-        text: cleanInlineMarkdown(ordered[3]),
+        text: `${cleanInlineMarkdown(ordered[3])}${hardBreak ? '\n' : ''}`,
       });
       continue;
     }
@@ -256,7 +282,7 @@ function parseMarkdownBlocks(markdown?: string): ParsedMarkdownBlock[] {
     const quote = /^>\s?(.+)$/.exec(line);
     if (quote) {
       flushParagraph();
-      blocks.push({ type: 'quote', text: cleanInlineMarkdown(quote[1]) });
+      blocks.push({ type: 'quote', text: `${cleanInlineMarkdown(quote[1])}${hardBreak ? '\n' : ''}` });
       continue;
     }
 
@@ -289,14 +315,19 @@ function parseMarkdownBlocks(markdown?: string): ParsedMarkdownBlock[] {
       continue;
     }
 
-    if (pushListContinuation(expandedLine)) {
+    if (pushListContinuation(expandedLine, hardBreak)) {
       continue;
     }
 
-    paragraphBuffer.push(line);
+    appendMarkdownLine(paragraphBuffer, line, hardBreak);
   }
 
   flushParagraph();
+  blocks.forEach(block => {
+    if ('text' in block) {
+      block.text = normalizeMarkdownText(block.text);
+    }
+  });
   return blocks;
 }
 
@@ -606,6 +637,14 @@ function bundleToPdf(bundle: MeetingExportBundle): Uint8Array {
     }
   };
 
+  const drawPdfLines = (lines: string[], x: number, startY: number, lineHeight: number) => {
+    lines.forEach((line, index) => {
+      if (line) {
+        pdf.text(line, x, startY + index * lineHeight);
+      }
+    });
+  };
+
   const splitLines = (
     text: string,
     width: number,
@@ -647,6 +686,7 @@ function bundleToPdf(bundle: MeetingExportBundle): Uint8Array {
     const lines: string[] = [];
     const paragraphs = text
       .replace(/\t/g, ' ')
+      .replace(/\\[ \t]*(\r?\n)/g, '$1')
       .split(/\r?\n/)
       .map(paragraph => paragraph.replace(/\s+/g, ' ').trim());
 
@@ -714,12 +754,14 @@ function bundleToPdf(bundle: MeetingExportBundle): Uint8Array {
 
       if (options.firstLinePrefix && index === 0) {
         pdf.text(options.firstLinePrefix, x, y);
-        pdf.text(chunk[0], x + (options.prefixWidth ?? 0), y);
+        if (chunk[0]) {
+          pdf.text(chunk[0], x + (options.prefixWidth ?? 0), y);
+        }
         if (chunk.length > 1) {
-          pdf.text(chunk.slice(1), x, y + lineHeight);
+          drawPdfLines(chunk.slice(1), x, y + lineHeight, lineHeight);
         }
       } else {
-        pdf.text(chunk, x, y);
+        drawPdfLines(chunk, x, y, lineHeight);
       }
 
       y += chunk.length * lineHeight;
@@ -992,7 +1034,7 @@ function bundleToPdf(bundle: MeetingExportBundle): Uint8Array {
     if (labelLines.length > 1) {
       pdf.setFont('helvetica', 'normal');
       pdf.setTextColor(71, 85, 105);
-      pdf.text(labelLines.slice(1), marginX, y + 11.5);
+      drawPdfLines(labelLines.slice(1), marginX, y + 11.5, 11.5);
     }
 
     pdf.setFont('helvetica', 'normal');
@@ -1007,7 +1049,7 @@ function bundleToPdf(bundle: MeetingExportBundle): Uint8Array {
 
       const availableLines = Math.max(1, Math.floor(remainingPageHeight() / lineHeight));
       const chunk = textLines.slice(index, index + availableLines);
-      pdf.text(chunk, textX, y);
+      drawPdfLines(chunk, textX, y, lineHeight);
       y += chunk.length * lineHeight;
       index += chunk.length;
     }
@@ -1022,7 +1064,7 @@ function bundleToPdf(bundle: MeetingExportBundle): Uint8Array {
   pdf.setFontSize(18);
   pdf.setTextColor(15, 23, 42);
   const titleLines = splitLines(bundle.title, maxWidth, { fontSize: 18, fontStyle: 'bold' });
-  pdf.text(titleLines, marginX, y);
+  drawPdfLines(titleLines, marginX, y, 22);
   y += titleLines.length * 22 + 10;
   pdf.setDrawColor(37, 99, 235);
   pdf.setLineWidth(1);
@@ -1040,7 +1082,7 @@ function bundleToPdf(bundle: MeetingExportBundle): Uint8Array {
     pdf.text(`${label}:`, marginX, y);
     pdf.setFont('helvetica', 'normal');
     const valueLines = splitLines(value, maxWidth - 68, { fontSize: 8.7 });
-    pdf.text(valueLines, marginX + 68, y);
+    drawPdfLines(valueLines, marginX + 68, y, 11.5);
     y += Math.max(13, valueLines.length * 11.5);
   });
   y += 10;

@@ -339,6 +339,10 @@ async fn apply_summary(pool: &SqlitePool, config: &SummaryDeploymentConfig) -> R
                     .or_else(|| existing_custom.as_ref().and_then(|cfg| cfg.top_p)),
                 transcription_api: None,
                 transcription_prompt: None,
+                send_chunk_metadata_fields: existing_custom
+                    .as_ref()
+                    .map(|cfg| cfg.send_chunk_metadata_fields)
+                    .unwrap_or(false),
             },
         )
         .await
@@ -418,7 +422,7 @@ async fn apply_transcription(
         return Ok(());
     }
 
-    SettingsRepository::save_transcript_config(pool, &provider, &model)
+    SettingsRepository::save_transcript_config(pool, &provider, &model, None)
         .await
         .map_err(|e| format!("Failed to save deployed transcription config: {}", e))?;
 
@@ -466,6 +470,10 @@ async fn apply_transcription(
                             .and_then(|cfg| cfg.transcription_prompt.clone())
                     },
                 ),
+                send_chunk_metadata_fields: existing_custom
+                    .as_ref()
+                    .map(|cfg| cfg.send_chunk_metadata_fields)
+                    .unwrap_or(false),
             },
         )
         .await
@@ -569,6 +577,7 @@ mod tests {
             id: "1".to_string(),
             provider: provider.to_string(),
             model: model.to_string(),
+            vad_preprocessing_enabled: true,
             whisper_api_key: Some("existing-whisper-key".to_string()),
             deepgram_api_key: None,
             eleven_labs_api_key: None,

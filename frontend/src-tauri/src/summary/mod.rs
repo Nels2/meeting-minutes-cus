@@ -6,7 +6,6 @@
 /// - Service layer for orchestrating summary generation
 /// - Templates for structured meeting summary generation
 /// - Tauri commands for frontend integration
-
 use serde::{Deserialize, Serialize};
 
 /// Custom OpenAI-compatible endpoint configuration
@@ -34,6 +33,9 @@ pub struct CustomOpenAIConfig {
     /// Optional prompt for chat-based transcription.
     #[serde(rename = "transcriptionPrompt")]
     pub transcription_prompt: Option<String>,
+    /// Send optional chunk metadata fields with audio transcription requests.
+    #[serde(rename = "sendChunkMetadataFields", default)]
+    pub send_chunk_metadata_fields: bool,
 }
 
 pub mod commands;
@@ -81,3 +83,43 @@ pub use processor::{
     generate_meeting_summary, rough_token_count,
 };
 pub use service::SummaryService;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn custom_openai_config_defaults_chunk_metadata_fields_to_false() {
+        let config: CustomOpenAIConfig = serde_json::from_value(serde_json::json!({
+            "endpoint": "http://localhost:8000/v1",
+            "apiKey": null,
+            "model": "whisper-1",
+            "maxTokens": null,
+            "temperature": null,
+            "topP": null,
+            "transcriptionApi": "audio",
+            "transcriptionPrompt": null
+        }))
+        .unwrap();
+
+        assert!(!config.send_chunk_metadata_fields);
+    }
+
+    #[test]
+    fn custom_openai_config_deserializes_chunk_metadata_fields() {
+        let config: CustomOpenAIConfig = serde_json::from_value(serde_json::json!({
+            "endpoint": "http://localhost:8000/v1",
+            "apiKey": null,
+            "model": "whisper-1",
+            "maxTokens": null,
+            "temperature": null,
+            "topP": null,
+            "transcriptionApi": "audio",
+            "transcriptionPrompt": null,
+            "sendChunkMetadataFields": true
+        }))
+        .unwrap();
+
+        assert!(config.send_chunk_metadata_fields);
+    }
+}
